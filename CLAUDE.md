@@ -4,74 +4,62 @@ Quantization-aware, PEFT-style tuning whose **merge stays quantized**.
 Full problem statement & approach comparison: @docs/DESIGN.md
 Overview & usage: @README.md
 
-## Invarianten (nicht verletzen)
+## Invariants (do not violate)
 
-1. **fake_quant (Training) == merge/fuse (Export).** `check_merge_equivalence`
-   muss grün sein, bevor einem Scheme getraut wird. Ein fake_quant, der nicht
-   zum fuse passt, ist schlechter als keiner.
-2. **Refuse statt approximate.** Eine nicht unterstützte Kombination aus
-   (scheme, backend, config) wirft `UnsupportedSchemeError` beim Model-Bau -
-   niemals still annähern.
-3. **merge bleibt int.** `merge(wq, s, z, adapter) -> (wq', s', z')`, niemals
-   dequantisieren. Das ist die bewusste Umkehr von pefts `merge_and_unload`.
-4. **Die trainierbare Menge ist die erste Achse.** `{weight, scale, zero_point,
-   adapter}`. Verfahren (EfficientQAT, QA-LoRA, PEQA, ...) sind Configs darüber,
-   keine neuen Subsysteme.
-5. **backend = Implementierung, qat_scheme = Vertrag.** Ein neues Backend ist
-   eine `QuantScheme`-Subklasse, die vier Primitive implementiert und
-   `supports()` einschränkt.
+1. **fake_quant (training) == merge/fuse (export).**
+   `check_merge_equivalence` must be green before a scheme is trusted.
+   A fake_quant that does not match the fuse is worse than none.
+2. **Refuse instead of approximate.**
+   An unsupported combination of (scheme, backend, config) raises `UnsupportedSchemeError` at model-build time, never silently approximating.
+3. **merge stays int.**
+   `merge(wq, s, z, adapter) -> (wq', s', z')`, never dequantizing.
+   This is the deliberate inverse of peft's `merge_and_unload`.
+4. **The trainable set is the first axis.**
+   `{weight, scale, zero_point, adapter}`.
+   Methods (EfficientQAT, QA-LoRA, PEQA, ...) are configs over it, not new subsystems.
+5. **backend = implementation, qat_scheme = contract.**
+   A new backend is a `QuantScheme` subclass that implements four primitives and narrows `supports()`.
 
-## Namenskonvention (spiegelt peft/torchtune)
+## Naming convention (mirrors peft/torchtune)
 
 `<Method>Config`, `<Method>Model(BaseQuantTuner)`, `QuantLinear`,
 `merge` / `merge_and_unload` / `unmerge`, `dispatch_default` / `dispatch_torchao`,
-`TrainableParams`. Nicht davon abweichen ohne Grund.
+`TrainableParams`.
+Do not deviate from this without a reason.
 
-## Struktur
+## Structure
 
-- `qpeft/config.py` `schemes.py` `mapping.py` `peft_model.py` `utils.py`
+- `qpeft/config.py` `schemes.py` `schemes_torchao.py` `mapping.py` `peft_model.py` `utils.py`
 - `qpeft/tuners/tuners_utils.py` (BaseQuantTuner, QuantLinear)
 - `qpeft/tuners/{efficient_qat,qa_lora}/` (config, model, layer[, torchao])
 
 ## Commands
 
-- `pip install -e ".[dev]"` - Editable-Install (echte Schemes: `.[torchao]`)
-- `python examples/quickstart.py` - Konstruktionspfad beider Methoden
-- `pytest` - Tests (sobald vorhanden)
+- `pip install -e ".[dev]"` - editable install (the torchao backend: `.[torchao]`)
+- `python examples/quickstart.py` - construction path for both methods
+- `pytest` - the test suite (merge equivalence, backends, injection, config)
 
-## Status & aktueller Meilenstein
+## Status & current milestone
 
-Der `int_uniform`-Vertrag ist für ZWEI Backends ausimplementiert und beide sind
-am selben Gate grün (`check_merge_equivalence`: EfficientQAT ohne Adapter exakt,
-QA-LoRA-Fold < 1e-4):
-- `backend="auto"` -> `ReferenceIntUniformScheme` (pure torch, grouped affine +
-  STE, RTN-Init). Immer verfügbar.
-- `backend="torchao"` -> `TorchaoIntUniformScheme` (`qpeft/schemes_torchao.py`,
-  auf torchaos STABILEN Primitiven `quant_primitives`; lazy import). Verweigert
-  trainierbaren `zero_point` (INT zero-point domain) - `supports()` in Aktion.
+The `int_uniform` contract is implemented against TWO backends, and both are green at the same gate (`check_merge_equivalence`: EfficientQAT without an adapter is exact, the QA-LoRA fold is < 1e-4).
+- `backend="auto"` -> `ReferenceIntUniformScheme` (pure torch, grouped affine + STE, RTN init).
+  Always available.
+- `backend="torchao"` -> `TorchaoIntUniformScheme` (`qpeft/schemes_torchao.py`, on torchao's STABLE `quant_primitives`, lazy import).
+  Refuses a trainable `zero_point` (INT zero-point domain), which is `supports()` in action.
 
-Tests: `tests/test_merge_equivalence.py` + `test_torchao_backend.py` (skippt ohne
-torchao) + `test_custom_models/tuners_utils/initialization/config.py`.
-`examples/train_*.py` und `examples/hf_injection.py` zeigen Training, int-Merge
-und HF-Injection.
+Tests: `tests/test_merge_equivalence.py` + `test_torchao_backend.py` (skips without torchao) + `test_custom_models/tuners_utils/initialization/config.py`.
+`examples/train_*.py` and `examples/hf_injection.py` show training, integer merge, and HF injection.
 
-**Nächster Schritt (Auswahl):** (a) `TorchaoQuantLinear` = ein SCHON von torchao
-gepacktes Layer übernehmen (Fall b) - blockiert durch torchaos in-flux
-Tensor-Subclass-API (int4 braucht Kernel-Lib, int8 `Int8Tensor.qdata`); braucht
-gepinnte torchao-Version + Ziel-Hardware. (b) Save/Load-Schicht (`PeftModel`-artig).
-(c) `mlx`-Backend. Stubs nicht implementieren, ohne im selben Schritt den
-Äquivalenztest mitzuliefern.
+**Next step (choose one):**
+(a) `TorchaoQuantLinear` = adopt a layer that torchao ALREADY packed (case b), blocked by torchao's in-flux tensor-subclass API (int4 needs a kernel lib, int8 exposes `Int8Tensor.qdata`); needs a pinned torchao version + target hardware.
+(b) A save/load layer (`PeftModel`-like).
+(c) The `mlx` backend.
+Do not implement a stub without delivering the equivalence test in the same step.
 
-## Langfristig vorgesehen (jetzt NICHT bauen)
+## Planned long-term (do NOT build now)
 
-Ternär (1.58-bit, {-1, 0, +1}, group-weise FP16-Scale, symmetrisch, kein
-Zero-Point) ist ein geplanter zukünftiger Scheme - innerhalb des Substrats, also
-später ein Registry-Eintrag `qat_scheme="ternary"` plus eine Export-Schicht
-(GGUF Q2_0_g128 / MLX 2-bit), kein Redesign. Jetzt keinen Stub und keinen
-`export()`-Haken dafür anlegen; tote Platzhalter veralten nur.
+Ternary (1.58-bit, {-1, 0, +1}, group-wise FP16 scale, symmetric, no zero-point) is a planned future scheme, inside the substrate, so later a registry entry `qat_scheme="ternary"` plus an export layer (GGUF Q2_0_g128 / MLX 2-bit), not a redesign.
+Do not add a stub or an `export()` hook for it now; dead placeholders only rot.
 
-Damit der Pfad offen bleibt, drei Annahmen NICHT einziehen: `bits` ist nicht die
-alleinige Wahrheit über die Repräsentation (der `qat_scheme`-String ist der
-Vertrag); `zero_point` ist nicht überall vorhanden (ternär ignoriert ihn);
-`merge` gibt immer int zurück, nie fp16. Alle drei sind bereits so - nur nicht
-verletzen.
+To keep the path open, do NOT bake in three assumptions: `bits` is not the sole source of truth about the representation (the `qat_scheme` string is the contract); `zero_point` is not present everywhere (ternary ignores it); `merge` always returns int, never fp16.
+All three already hold; just do not violate them.

@@ -1,37 +1,31 @@
 # examples
 
-Runnable, self-checking examples - the qpeft analog of peft's `examples/`.
-Each script trains a tiny model and asserts its own success, so a clean exit
-means it worked.
+Runnable, self-checking examples, the qpeft analog of peft's `examples/`.
+Each script trains a tiny model and asserts its own success, so a clean exit means it worked.
 
 ```bash
-pip install -e .            # runtime is just torch
-python examples/quickstart.py            # construction path, no training
-python examples/train_efficient_qat.py   # QAT over a 2-bit substrate + merge
-python examples/train_qa_lora.py         # adapter training + zero-point fold merge
+pip install -e .                          # runtime is just torch
+python examples/quickstart.py             # construction path, no training
+python examples/train_efficient_qat.py    # QAT over a 2-bit substrate + merge
+python examples/train_qa_lora.py          # adapter training + zero-point fold merge
+python examples/hf_injection.py           # inject QuantLinear into a Hugging Face model
 ```
 
-## Was heute läuft
+## What runs today
 
-Alle Skripte laufen gegen den dependency-freien Referenz-Backend
-(`qat_scheme="int_uniform"`, `backend="auto"`, reines PyTorch):
+All scripts run against the dependency-free reference backend (`qat_scheme="int_uniform"`, `backend="auto"`, pure PyTorch).
 
-- **`train_efficient_qat.py`** - quantization-aware Training über einem 2-bit
-  Gitter (STE fake_quant), danach `check_merge_equivalence` grün pro
-  `QuantLinear`, danach `merge_and_unload()` -> **int-Artefakt**, dessen Ausgabe
-  exakt der trainierten Ausgabe entspricht.
-- **`train_qa_lora.py`** - frozen quantisierte Base + trainierbarer Adapter. Der
-  Adapter ist pro Quantisierungs-Gruppe gepoolt, faltet beim Merge **exakt** in
-  die Zero-Points und bleibt int (der bewusste Gegensatz zu pefts
-  dequantisierendem Merge).
+- **`train_efficient_qat.py`**: quantization-aware training over a 2-bit grid (STE fake_quant), then `check_merge_equivalence` is green per `QuantLinear`, then `merge_and_unload()` returns an **integer artifact** whose output equals the trained output exactly.
+- **`train_qa_lora.py`**: a frozen quantized base plus a trainable adapter.
+  The adapter is pooled per quantization group, folds **exactly** into the zero-points on merge, and stays int (the deliberate opposite of peft's dequantizing merge).
+- **`hf_injection.py`**: loads a small transformers model and swaps its targeted `nn.Linear` layers for `QuantLinear` in place, then runs a forward pass.
 
-Der Spine-Test dahinter ist `tests/test_merge_equivalence.py` (`pytest`).
+The same contract also runs on the torchao backend (`backend="torchao"`), measured at the same gate; see `tests/test_torchao_backend.py`.
+The spine test behind all of this is `tests/test_merge_equivalence.py` (`pytest`).
 
-## Was noch fehlt
+## What is still missing
 
-- **Backends** `torchao_cuda` / `mlx` sind noch nicht gebaut - sie verweigern
-  beim Model-Bau (`backend="mlx"` -> Fehler), statt still anzunähern. Sie werden
-  denselben `int_uniform`-Vertrag implementieren und am selben Gate gemessen.
-- Der **ternär**-Scheme ist bewusst noch nicht drin (siehe `docs/DESIGN.md`).
-- EfficientQATs Phasen-Übergang (Block-AP -> E2E-QP mit eingefrorenen int-Codes)
-  ist im Skelett vereinfacht; das Beispiel zeigt die Block-AP-Phase.
+- The `mlx` backend is not built yet; it refuses at model-build time (`backend="mlx"` raises) rather than approximating.
+  It will implement the same `int_uniform` contract and be measured at the same gate.
+- The **ternary** scheme is deliberately not in yet (see `docs/DESIGN.md`).
+- EfficientQAT's phase transition (Block-AP to E2E-QP with frozen int codes) is simplified in the skeleton; the example shows the Block-AP phase.
