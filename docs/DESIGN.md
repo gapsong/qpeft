@@ -1,104 +1,79 @@
-# Design & Abgrenzung
+# Design and scope
 
-Warum qpeft existiert, gegen welche konkreten Fehlermodi es gebaut ist, und wo
-jede Interface-Entscheidung im Code steht. Dies ist das „warum", die README ist
-das „was".
+Why qpeft exists, which concrete failure modes it is built against, and where each interface decision lives in the code.
+This is the "why"; the README is the "what".
 
-## Das Problem: eine Wurzel, drei Symptome
+## The problem: one root, three symptoms
 
-**Wurzel.** Der `fake_quant`, der im Training benutzt wird, und der `fuse`/`save`,
-der beim Export benutzt wird, sind getrennte Code-Pfade. Wenn sie auch nur leicht
-auseinanderlaufen, trainierst du ein Modell, das im Deployment nicht existiert.
+**Root.**
+The `fake_quant` used during training and the `fuse`/`save` used at export are separate code paths.
+If they drift even slightly, you train a model that does not exist at deployment.
 
-Drei bestehende Ansätze zeigen drei Reaktionen auf dieselbe Wurzel:
+Three existing approaches show three reactions to the same root.
 
-- **torchao + torchtune** komponieren QAT mit LoRA und erreichen ein quantisiertes
-  Modell mit minimalem Qualitätsverlust - aber die Fähigkeit steckt in einem
-  **CUDA- und torchtune-Rezept** fest. Es ist keine herauslösbare Primitive,
-  sondern ein Framework-Flow.
-- **unsloth-zoo (MLX-PR)** läuft frontal in die Wurzel: `merged_4bit` lässt die
-  quantisierte Base nicht sauber, also `fuse ≠ fake_quant`. Die einzig sichere
-  Reaktion des Autors ist, die betroffenen Schemata zu **verweigern** - „a
-  fake-quant that does not match fuse() is worse than none". Korrekt, aber
-  ad hoc und pro Backend.
-- **peft** weicht aus: `merge_and_unload()` **dequantisiert** zu fp16. Das Problem
-  ist umgangen, aber das quantisierte Artefakt ist beim Mergen verloren.
+- **torchao + torchtune** compose QAT with LoRA and reach a quantized model with minimal quality loss, but the capability is stuck inside a **CUDA and torchtune recipe**.
+  It is not an extractable primitive, it is a framework flow.
+- **unsloth-zoo (the MLX PR)** runs straight into the root: `merged_4bit` does not leave the quantized base clean, so `fuse != fake_quant`.
+  The only safe reaction the author has is to **refuse** the affected schemes: "a fake-quant that does not match fuse() is worse than none".
+  Correct, but ad hoc and per backend.
+- **peft** sidesteps it: `merge_and_unload()` **dequantizes** to fp16.
+  The problem is avoided, but the quantized artifact is lost at merge time.
 
-**Fazit.** Niemand besitzt das Paar `(fake_quant, fuse)` als *Vertrag*. Deshalb
-wird es pro Backend neu ausgefochten, und der allgemeine Fall - ein Adapter, der
-in das quantisierte Artefakt faltet und quantisiert bleibt - fällt durch die
-Ritzen.
+**Conclusion.**
+Nobody owns the pair `(fake_quant, fuse)` as a *contract*.
+So it is re-fought per backend, and the general case (an adapter that folds into the quantized artifact and stays quantized) falls through the cracks.
 
-## Die drei Ansätze im Vergleich
+## The three approaches compared
 
-| | trainierbar | Merge-Artefakt | fake_quant ↔ fuse | Backend / Framework | herauslösbare Primitive? |
+| | trainable | merge artifact | fake_quant <-> fuse | backend / framework | extractable primitive? |
 |---|---|---|---|---|---|
-| **peft (QLoRA)** | Adapter | **dequantisiert (fp16)** | n/a (kein QAT-Merge) | an bnb/torchao delegiert | nein |
-| **torchtune + torchao** | Base fake-quant + LoRA | quantisiert | intern gematcht | **CUDA + torchtune-Rezept** | **nein (framework-gekoppelt)** |
-| **unsloth-zoo (MLX)** | LoRA über QuantizedLinear | `merged_4bit` | **verweigert bei ≠** | **MLX / Apple Silicon** | nein (backend-spezifisch) |
-| **qpeft** | `{weight, scale, zero_point, adapter}` wählbar | **bleibt int (per Signatur)** | **erzwungen + getestet** | Backend hinter dem Scheme | **ja (contract-first)** |
+| **peft (QLoRA)** | adapter | **dequantized (fp16)** | n/a (no QAT merge) | delegated to bnb/torchao | no |
+| **torchtune + torchao** | base fake-quant + LoRA | quantized | matched internally | **CUDA + torchtune recipe** | **no (framework-coupled)** |
+| **unsloth-zoo (MLX)** | LoRA over QuantizedLinear | `merged_4bit` | **refused when !=** | **MLX / Apple Silicon** | no (backend-specific) |
+| **qpeft** | `{weight, scale, zero_point, adapter}` selectable | **stays int (by signature)** | **enforced + tested** | backend behind the scheme | **yes (contract-first)** |
 
-## Was qpeft anders macht - und wo es im Interface steht
+## What qpeft does differently, and where it lives in the interface
 
-### 1. (fake_quant, fuse) ist EIN Objekt
-`fake_quant()` und `merge()` sind Methoden derselben `QuantScheme`. Man kann die
-Trainings-Quantisierung nicht definieren, ohne den passenden Export-Fuse
-danebenzulegen. Das verhindert das Auseinanderdriften strukturell, statt es zu
-dokumentieren. → `qpeft/schemes.py::QuantScheme`
+### 1. (fake_quant, fuse) is ONE object
+`fake_quant()` and `merge()` are methods on the same `QuantScheme`.
+You cannot define the training quantization without placing the matching export fuse right next to it.
+That prevents drift structurally instead of documenting against it.
+-> `qpeft/schemes.py::QuantScheme`
 
-### 2. Äquivalenz ist ein Test-Gate
-Die Einsicht „mismatch ist schlechter als keiner" wird zur testbaren Invariante:
-der Trainingspfad (`fake_quant`) muss numerisch dem gemergten Pfad (`merge` →
-`dequant`) entsprechen. Das ist der Meilenstein, an dem ein Scheme „gültig" wird.
-→ `qpeft/utils.py::check_merge_equivalence`
+### 2. Equivalence is a test gate
+The insight "a mismatch is worse than none" becomes a testable invariant: the training path (`fake_quant`) must numerically equal the merged path (`merge` -> `dequant`).
+That is the milestone at which a scheme becomes "valid".
+-> `qpeft/utils.py::check_merge_equivalence`
 
-### 3. Refuse statt Approximate - als First-Class-Mechanismus
-Was der MLX-Autor von Hand pro Scheme tat, ist hier ein Interface-Vertrag: ein
-Scheme deklariert über `supports(config)`, für welche Configs sein Fuse den
-Fake-Quant garantiert trifft, und `assert_supported` **verweigert** beim
-Model-Bau lautstark, wenn nicht. Keine stille Annäherung.
-→ `QuantScheme.supports` / `assert_supported` / `UnsupportedSchemeError`,
-   aufgerufen in `build_scheme`
+### 3. Refuse instead of approximate, as a first-class mechanism
+What the MLX author did by hand per scheme is here an interface contract: a scheme declares via `supports(config)` which configs its fuse is guaranteed to match its fake_quant, and `assert_supported` **refuses** loudly at model-build time when it cannot.
+No silent approximation.
+-> `QuantScheme.supports` / `assert_supported` / `UnsupportedSchemeError`, called in `build_scheme`
 
-### 4. Backend ist Implementierung, nicht Vertrag
-`qat_scheme=` benennt den *Vertrag* (die Repräsentation), `backend=` benennt die
-*Implementierung* (torchao_cuda, mlx, ...). Damit sind CUDA/torchao und MLX zwei
-Implementierungen desselben `QuantScheme`-Interfaces, beide durch dasselbe
-Äquivalenz-Gate abgesichert. Das ist die Entkopplung, die torchtune fehlt.
-→ `QuantTuningConfig.backend` + `build_scheme` (Registry pro Vertrag, Backend im Factory)
+### 4. Backend is implementation, not contract
+`qat_scheme=` names the *contract* (the representation), `backend=` names the *implementation* (torchao, mlx, ...).
+So torchao and MLX are two implementations of the same `QuantScheme` interface, both secured by the same equivalence gate.
+That is the decoupling torchtune lacks.
+-> `QuantTuningConfig.backend` + `build_scheme` (registry per contract, backend chosen in the factory)
 
-### 5. Merge bleibt quantisiert - per Signatur
-`merge(wq, s, z, adapter) -> (wq', s', z')`: int rein, int raus. Anders als pefts
-dequantisierender Merge ist das quantisierte Artefakt das Ergebnis, nicht ein
-Zwischenschritt, der weggeworfen wird.
-→ `QuantScheme.merge` / `QuantModel.merge_and_unload`
+### 5. Merge stays quantized, by signature
+`merge(wq, s, z, adapter) -> (wq', s', z')`: int in, int out.
+Unlike peft's dequantizing merge, the quantized artifact is the result, not an intermediate step that is thrown away.
+-> `QuantScheme.merge` / `QuantModel.merge_and_unload`
 
-## Was daraus folgt
+## What follows from this
 
-Ein neues Verfahren (EfficientQAT, QA-LoRA, PEQA, L4Q, ...) ist eine Config über
-den Achsen plus höchstens eine neue Operation (der Zero-Point-Fold). Ein neues
-Backend ist eine `QuantScheme`-Subklasse, die vier Primitive implementiert und
-`supports()` einschränkt - und automatisch am selben Gate gemessen wird. Der
-allgemeine Fall, der bisher durch die Ritzen fiel, ist damit der Normalfall,
-nicht die Ausnahme.
+A new method (EfficientQAT, QA-LoRA, PEQA, L4Q, ...) is a config over the axes plus at most one new operation (the zero-point fold).
+A new backend is a `QuantScheme` subclass that implements four primitives and narrows `supports()`, and it is automatically measured at the same gate.
+The general case that used to fall through the cracks is thereby the normal case, not the exception.
 
-## Vorgesehen für später: ternär (noch nicht drin)
+## Planned for later: ternary (not in yet)
 
-Ternär (1.58-bit, {-1, 0, +1} mit group-weiser FP16-Scale, symmetrisch, kein
-Zero-Point) ist ein *vorgesehener zukünftiger Scheme* - nicht mit den Dingen im
-Abschnitt "Was es bewusst NICHT ist" (README) zu verwechseln. Jene
-(Codebook/Vektor-Quant, SBC) sprengen das Substrat; ternär liegt *innerhalb*
-davon: gruppiert, uniform, gewichts-only. Es wird deshalb später ein
-Registry-Eintrag (`qat_scheme="ternary"`) plus eine Export-Schicht in ein
-serviertes Format (GGUF Q2_0_g128, MLX 2-bit), kein Redesign. Ausgeliefert ist
-diese Repräsentation bereits - PrismMLs Bonsai ist genau das, inklusive "packed
-weights, never expanded to FP16", was 1:1 dem `merge`-Contract entspricht.
+Ternary (1.58-bit, {-1, 0, +1} with a group-wise FP16 scale, symmetric, no zero-point) is a *planned future scheme*, not to be confused with the items in the "What it deliberately is NOT" section of the README.
+Those (codebook / vector quant, SBC) break the substrate; ternary sits *inside* it: grouped, uniform, weight-only.
+So it will later be a registry entry (`qat_scheme="ternary"`) plus an export layer into a served format (GGUF Q2_0_g128, MLX 2-bit), not a redesign.
+This representation already ships in the wild: PrismML's Bonsai is exactly this, including "packed weights, never expanded to FP16", which maps one-to-one onto the `merge` contract.
 
-Aktuell außerhalb des Scopes. Damit der Pfad offen bleibt, ohne dass eine Zeile
-ternär-spezifischer Code entsteht, reichen drei *unterlassene* Fehler: (1) `bits`
-nicht zur alleinigen Wahrheit über die Repräsentation machen - der
-`qat_scheme`-String ist der Vertrag, keine `if bits == 4`-Logik streuen;
-(2) `zero_point` nicht als überall vorhanden voraussetzen - ternär ist
-symmetrisch und ignoriert ihn (der trainable-set-Switch und `supports()` erlauben
-das bereits); (3) `merge` bleibt "int rein, int raus", nie fp16. Alle drei sind
-schon so gebaut - sie sind nur nicht zu verletzen.
+Currently out of scope.
+To keep the path open without writing a single line of ternary-specific code, three *omitted* mistakes suffice: (1) do not make `bits` the sole source of truth about the representation (the `qat_scheme` string is the contract, so do not scatter `if bits == 4` logic); (2) do not assume `zero_point` is present everywhere (ternary is symmetric and ignores it, which the trainable-set switch and `supports()` already allow); (3) `merge` stays "int in, int out", never fp16.
+All three are already built this way; they just must not be violated.
