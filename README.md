@@ -2,110 +2,94 @@
 
 **Quantization-aware, PEFT-style tuning whose merge stays quantized.**
 
-`qpeft` trains over a quantized substrate and, unlike `peft`, its
-`merge_and_unload()` returns an *integer* model rather than dequantizing back to
-fp16. It borrows torchao for the low-level primitives (fake-quant, packed dtypes,
-kernels) and owns the one seam neither `peft` nor `unsloth` owns: **a QAT-trained
-adapter/parameter set that folds into the quantized weights and stays quantized,
-with a correctness guarantee.**
+`qpeft` trains over a quantized substrate.
+Unlike `peft`, its `merge_and_unload()` returns an *integer* model instead of dequantizing back to fp16.
+It leans on torchao for low-level primitives (affine quant, packed dtypes, kernels) and owns the one seam neither `peft` nor `unsloth` owns: **a QAT-trained adapter/parameter set that folds into the quantized weights and stays quantized, with a correctness guarantee.**
 
 ---
 
-## Warum dieses Repo existiert
+## Why this repo exists
 
-Der quantisierte Trainings-Space hat ein Zuständigkeitsloch, das bisher niemand
-als *ein* Feature besitzt:
+The quantized-training space has a gap that nobody yet owns as *one* feature.
 
-- **peft** friert die Base ein und trainiert Adapter. Sein `merge_and_unload()`
-  **dequantisiert** das Modell — das quantisierte Artefakt geht beim Mergen
-  verloren. Quantisierung selbst ist an bitsandbytes/torchao delegiert; der
-  „Merge bleibt quantisiert"-Fall ist nur halb abgedeckt (torchao mergt sauber
-  nur `int8_weight_only` + LoRA; AQLM/AWQ können gar nicht mergen).
-- **unsloth** ist auf schnelles, speichersparsames QLoRA/LoRA optimiert — aber
-  auf demselben Frozen-Base-plus-getrennter-Adapter-Modell. Echtes QAT ist dort
-  backend-spezifisch und in Arbeit (der MLX-QAT-PR), kein backend-agnostischer
-  Vertrag.
+- **peft** freezes the base and trains an adapter.
+  Its `merge_and_unload()` **dequantizes** the model, so the quantized artifact is lost at merge time.
+  Quantization itself is delegated to bitsandbytes/torchao, and the "merge stays quantized" case is only half covered (torchao merges cleanly only for `int8_weight_only` + LoRA; AQLM/AWQ cannot merge at all).
+- **unsloth** is tuned for fast, memory-light QLoRA/LoRA, but on the same frozen-base-plus-separate-adapter model.
+  Real QAT there is backend-specific and in progress (the MLX QAT PR), not a backend-agnostic contract.
 
-`qpeft` schließt genau diese Naht: Training über einem quantisierten Substrat,
-dessen Merge quantisiert bleibt — als First-Class-Contract mit Correctness-Test.
+`qpeft` closes exactly that seam: training over a quantized substrate whose merge stays quantized, as a first-class contract with a correctness test.
 
-## Das Kernprinzip
+## The core principle
 
-Zwei Ideen tragen alles:
+Two ideas carry everything.
 
-1. **Die trainierbare Menge ist die erste Achse.** Nicht „Adapter vs. Frozen",
-   sondern eine Auswahl aus `{weight, scale, zero_point, adapter}`
-   (`TrainableParams`). Damit sind PEQA (nur `scale`), EfficientQAT
-   (`weight+scale+zero_point`, dann `scale`) und QA-LoRA (`adapter` faltet in
-   `zero_point`) **Konfigurationen über einem Substrat**, keine getrennten
-   Subsysteme.
-2. **`fake_quant` muss zum `merge` passen.** Der STE-Surrogat im Training und die
-   exakte Faltung beim Export müssen numerisch übereinstimmen — ein Fake-Quant,
-   der nicht zum Fuse passt, ist schlechter als keiner. `check_merge_equivalence`
-   macht das zur testbaren Invariante. Das ist der Spine der Lib.
+1. **The trainable set is the first axis.**
+   Not "adapter vs. frozen", but a choice from `{weight, scale, zero_point, adapter}` (`TrainableParams`).
+   This makes PEQA (`scale` only), EfficientQAT (`weight + scale + zero_point`, then `scale`) and QA-LoRA (`adapter` folds into `zero_point`) **configurations over one substrate**, not separate subsystems.
+2. **`fake_quant` must match `merge`.**
+   The STE surrogate used in training and the exact fold used at export must agree numerically.
+   A fake-quant that does not match the fuse is worse than none.
+   `check_merge_equivalence` turns that into a testable invariant, and it is the spine of the library.
 
-## Was es über peft hinaus kann
+## What it does beyond peft
 
-- **Quantisierungsparameter trainieren.** `peft` kann „trainiere den Quant-Scale"
-  gar nicht ausdrücken; hier ist es `trainable_params=(SCALE,)`.
-- **Merge bleibt int.** `QuantModel.merge_and_unload()` liefert ein quantisiertes
-  Modell, nicht fp16 — die entgegengesetzte Semantik zu `peft`, bewusst.
-- **Der Methoden-Zoo sind Configs.** EfficientQAT, QA-LoRA, PEQA, L4Q, LoftQ-Init
-  … jeweils ein Punkt auf den Achsen. Ein neues Paper = eine Config plus evtl.
-  eine Operation, keine neue Integration.
-- **Correctness als Invariante.** `check_merge_equivalence` gibt es in `peft` so
-  nicht.
+- **Train quantization parameters.**
+  `peft` cannot even express "train the quant scale"; here it is `trainable_params=(SCALE,)`.
+- **Merge stays int.**
+  `QuantModel.merge_and_unload()` returns a quantized model, not fp16, which is the deliberate opposite of `peft`.
+- **The method zoo is just configs.**
+  EfficientQAT, QA-LoRA, PEQA, L4Q, LoftQ-init and so on are each a point on the axes.
+  A new paper is a config plus at most one operation, not a new integration.
+- **Correctness as an invariant.**
+  `check_merge_equivalence` has no equivalent in `peft`.
 
-## Was es über unsloth hinaus kann
+## What it does beyond unsloth
 
-- **Backend-agnostischer Vertrag** statt eines einzelnen Backend-PRs.
-- **QAT + Adapter als ein parametrisiertes Rezept** — die Kombination, die
-  torchtune/torchao nur teilweise und nur pro Backend anbieten.
-- **Nicht nur Speed auf dem Frozen-Base-Modell**, sondern das quantisierte
-  Trainings-Artefakt selbst als Ziel.
+- A **backend-agnostic contract** instead of a single backend PR.
+- **QAT + adapter as one parameterized recipe**, the combination torchtune/torchao offer only partially and only per backend.
+- Not just speed on the frozen-base model, but the quantized training artifact itself as the target.
 
-## Verhältnis zu torchao
+## Relation to torchao
 
-`qpeft` ersetzt torchao nicht, es hängt sich dran: der `fake_quant` bindet an
-torchaos QAT-`FakeQuantizer`, `quantize`/`dequant` an den `AffineQuantizedTensor`
-(Datentyp + tinygemm/Marlin-Kernel + `torch.compile`/FSDP), Export an
-`quantize_`. `qpeft` besitzt nur die Naht, die torchao offen lässt: die Faltung
-des Adapters in den `zero_point` plus die mehrphasige QAT-Abfolge — mit einem
-Test, der beweist, dass beide Pfade übereinstimmen.
+`qpeft` does not replace torchao; it composes with it.
+It ships a dependency-free pure-torch reference backend so the contract is real and testable without any extra install, and a torchao backend (`backend="torchao"`) that implements the *same* contract on torchao's stable affine primitives (`quant_primitives`).
+Both backends are measured at the same equivalence gate.
+`qpeft` owns only the seam torchao leaves open: folding the adapter into the `zero_point`, plus the multi-phase QAT schedule, with a test that proves both paths agree.
 
-## Was es bewusst NICHT ist
+## What it deliberately is NOT
 
-Kohärente Scheibe statt Do-Everything-Wrapper: **weight-only, gruppiert,
-uniform-int, Decoder-LLMs.** Ausdrücklich draußen — Codebook/Vektor-Quant
-(AQLM, QuIP#) und SBC-artige stochastische Binär-Codecs. Anderes Substrat,
-anderer Inferenzoperator; das gehört in ein Schwesterprojekt, nicht hierher.
+A coherent slice, not a do-everything wrapper: **weight-only, grouped, uniform-int, decoder LLMs.**
+Explicitly out of scope: codebook / vector quant (AQLM, QuIP#) and SBC-style stochastic binary codecs.
+Those are a different substrate and a different inference operator; they belong in a sibling project, not here.
 
-## Struktur (spiegelt peft)
+## Structure (mirrors peft)
 
 ```
 qpeft/
-  config.py                     # QuantTuningType, TrainableParams, QuantTuningConfig  (~ PeftType/PeftConfig)
-  schemes.py                    # FakeQuantizeConfig, QuantScheme, Registry           (qat_scheme= a la unsloth)
-  mapping.py                    # get_quant_model + Registries                        (~ get_peft_model)
-  peft_model.py                 # QuantModel.merge_and_unload()                       (~ PeftModel)
-  utils.py                      # check_merge_equivalence                             (der Spine-Test)
+  config.py            # QuantTuningType, TrainableParams, QuantTuningConfig   (~ PeftType / PeftConfig)
+  schemes.py           # QuantScheme contract, ReferenceIntUniformScheme, registry
+  schemes_torchao.py   # TorchaoIntUniformScheme: same contract on torchao primitives (optional)
+  mapping.py           # get_quant_model + registries                         (~ get_peft_model)
+  peft_model.py        # QuantModel.merge_and_unload()                        (~ PeftModel)
+  utils.py             # check_merge_equivalence                              (the spine test)
   tuners/
-    tuners_utils.py             # BaseQuantTuner, AdapterLayer, QuantLinear           (~ BaseTuner/BaseTunerLayer/lora.Linear)
+    tuners_utils.py    # BaseQuantTuner, AdapterLayer, QuantLinear            (~ BaseTuner / lora.Linear)
     efficient_qat/{config,model,layer}.py
-    qa_lora/{config,model,layer,torchao}.py   # torchao.py ~ peft lora/torchao.py
-examples/quickstart.py
+    qa_lora/{config,model,layer,torchao}.py
+examples/              # quickstart, train_efficient_qat, train_qa_lora, hf_injection
+tests/                 # merge-equivalence, backends, injection, config
 pyproject.toml
 ```
 
-## Design & Abgrenzung
+## Design and scope
 
-Warum das Repo existiert, die drei Vergleichs-Ansätze und wo jede
-Interface-Entscheidung im Code steht: siehe [`docs/DESIGN.md`](docs/DESIGN.md).
+For why the repo exists, the three comparison approaches, and where each interface decision lives in the code, see [`docs/DESIGN.md`](docs/DESIGN.md).
 
 ## Basic usage
 
 ```bash
-pip install -e .            # Laufzeit: torch; echte Schemes: pip install -e ".[torchao]"
+pip install -e .            # runtime is just torch; the torchao backend: pip install -e ".[torchao]"
 python examples/quickstart.py
 ```
 
@@ -115,32 +99,45 @@ from qpeft import get_quant_model, QALoraConfig, efficient_qat_schedule
 
 base = nn.Sequential(nn.Linear(512, 512))
 
-# EfficientQAT: zwei Phasen (Block-AP -> E2E-QP), je eine Config
+# EfficientQAT: two phases (Block-AP then E2E-QP), one config each.
 for cfg in efficient_qat_schedule(bits=2, group_size=64):
     model = get_quant_model(base, cfg)
-    # ... train phase ...
+    # ... train this phase ...
 
-# QA-LoRA: eine Config; Adapter faltet in die Zero-Points
+# QA-LoRA: one config; the adapter folds into the zero-points on merge.
 model = get_quant_model(base, QALoraConfig(bits=4, group_size=32, r=64))
 # ... train ...
-quantized = model.merge_and_unload()          # bleibt int
+quantized = model.merge_and_unload()          # stays integer
+
+# Same contract on the torchao backend:
+model = get_quant_model(base, QALoraConfig(bits=4, group_size=64, r=16, backend="torchao"))
 ```
 
-Den Spine-Test pro Layer laufen lassen, bevor man einem Scheme traut:
+Run the spine test per layer before trusting a scheme:
 
 ```python
 from qpeft import check_merge_equivalence
 check_merge_equivalence(scheme, w, s, z, adapter, x)   # fake_quant (train) == merge (export)
 ```
 
+Load a Hugging Face model and inject `QuantLinear` into it (`examples/hf_injection.py`):
+
+```python
+from transformers import AutoModelForCausalLM
+from qpeft import get_quant_model, EfficientQATConfig
+
+hf = AutoModelForCausalLM.from_pretrained("...")
+model = get_quant_model(hf, EfficientQATConfig(
+    bits=4, group_size=64, phase="e2e_qp",
+    target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]))
+```
+
 ## Status
 
-Der `int_uniform`-Vertrag ist gegen ZWEI Backends ausimplementiert und beide sind
-am selben Gate grün (`check_merge_equivalence`: EfficientQAT ohne Adapter exakt,
-QA-LoRA-Fold < 1e-4): `backend="auto"` (pure-torch `ReferenceIntUniformScheme`,
-immer da) und `backend="torchao"` (`TorchaoIntUniformScheme` auf torchaos stabilen
-`quant_primitives`). `examples/train_*.py` zeigen echtes Training + int-Merge,
-`examples/hf_injection.py` das Injizieren in ein Hugging-Face-Modell. Weiter Stub:
-`TorchaoQuantLinear` (ein von torchao SCHON gepacktes Layer übernehmen - blockiert
-durch torchaos in-flux Tensor-Subclass-API), der `mlx`-Backend und der geplante
-ternär-Scheme.
+The `int_uniform` contract is implemented against two backends, and both are green at the same gate (`check_merge_equivalence`: EfficientQAT without an adapter is exact, the QA-LoRA fold is < 1e-4).
+`backend="auto"` selects the pure-torch `ReferenceIntUniformScheme`, which is always available.
+`backend="torchao"` selects `TorchaoIntUniformScheme`, built on torchao's stable `quant_primitives` and imported lazily so torchao stays optional.
+`examples/train_*.py` show real training plus an integer merge, and `examples/hf_injection.py` shows injection into a Hugging Face model.
+The test suite (`pytest`) covers merge equivalence, both backends, injection, initialization and config validation.
+
+Still stubbed: `TorchaoQuantLinear` (adopting a tensor that torchao itself already packed, blocked by torchao's in-flux tensor-subclass API), the `mlx` backend, and the planned ternary scheme.
