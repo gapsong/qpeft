@@ -78,28 +78,18 @@ class QuantScheme:
         raise NotImplementedError("fold adapter into zero-points; stay quantized")
 
 
-class ReferenceIntUniformScheme(QuantScheme):
-    """Dependency-free reference implementation of the int_uniform contract.
-
-    Weight-only, group-wise *asymmetric* affine quantization with a straight-
-    through estimator for training. It exists so the (fake_quant, merge) pair is
-    real and testable in pure PyTorch; the torchao/MLX backends are separate
-    implementations of the SAME contract, measured at the SAME gate.
-
-        code  = clamp(round(w / s + z), 0, 2**bits - 1)     # quantize (int artifact)
-        w_hat = (code - z) * s                              # dequant
-        fake_quant = w_hat, with STE gradient to {w, s, z}  # training surrogate
-
-    Grouping is along the input dimension: `s` and `z` hold one entry per group of
-    `group_size` input channels. `merge` keeps the integer codes and folds a
-    group-structured adapter into the (float) zero-points -- int in, int out, the
-    deliberate inverse of peft's dequantizing merge."""
+class _IntUniformScheme(QuantScheme):
+    """Shared int_uniform machinery: bit-width, level range, and the adapter fold
+    (`merge`). Backends subclass this and implement fake_quant/quantize/dequant/
+    init_qparams. The fold lives here ONCE so it cannot drift between backends --
+    the very divergence this project exists to prevent."""
 
     def __init__(self, fq: FakeQuantizeConfig, *, name: str = "int_uniform",
                  backend: str = "torch", supports_adapter: bool = True):
         super().__init__(fq, name=name, backend=backend, supports_adapter=supports_adapter)
         digits = "".join(c for c in str(fq.dtype) if c.isdigit())
         self.bits = int(digits) if digits else 4
+        self.group_size = fq.group_size
 
     @property
     def qmin(self) -> int:
@@ -108,6 +98,27 @@ class ReferenceIntUniformScheme(QuantScheme):
     @property
     def qmax(self) -> int:
         return (1 << self.bits) - 1
+
+    def merge(self, wq, s, z, adapter=None):
+        """int in, int out. No adapter -> identity. A group-structured adapter
+        (QA-LoRA) folds EXACTLY into the zero-points; codes and scale are untouched,
+        so the merged artifact stays quantized. Defined once for every backend."""
+        if adapter is None:
+            return wq, s, z
+        delta = adapter.folded_delta()                  # (out, n_groups) per-group weight shift
+        return wq, s, z - delta / s                     # (code - z')*s == (code - z)*s + delta
+
+
+class ReferenceIntUniformScheme(_IntUniformScheme):
+    """Dependency-free reference implementation of the int_uniform contract.
+
+    Weight-only, group-wise *asymmetric* affine quantization with a straight-
+    through estimator for training. The torchao/MLX backends are separate
+    implementations of the SAME contract, measured at the SAME gate.
+
+        code  = clamp(round(w / s + z), 0, 2**bits - 1)     # quantize (int artifact)
+        w_hat = (code - z) * s                              # dequant
+        fake_quant = w_hat, with STE gradient to {w, s, z}  # training surrogate"""
 
     @staticmethod
     def _expand(p, in_features):
@@ -142,16 +153,6 @@ class ReferenceIntUniformScheme(QuantScheme):
         se, ze = self._expand(s, wq.shape[-1]), self._expand(z, wq.shape[-1])
         return (wq.to(se.dtype) - ze) * se
 
-    def merge(self, wq, s, z, adapter=None):
-        """int in, int out. No adapter -> identity. A group-structured adapter
-        (QA-LoRA) folds EXACTLY into the zero-points; codes and scale are untouched,
-        so the merged artifact stays quantized."""
-        if adapter is None:
-            return wq, s, z
-        delta = adapter.folded_delta()                  # (out, n_groups) per-group weight shift
-        z_new = z - delta / s                           # (code - z_new)*s == (code - z)*s + delta
-        return wq, s, z_new
-
 
 _SCHEMES: dict[str, Callable[[FakeQuantizeConfig, str], QuantScheme]] = {}
 
@@ -165,8 +166,14 @@ def register_scheme(name: str):             # ~ peft's peft_type -> tuner regist
 
 def build_scheme(cfg: QuantTuningConfig) -> QuantScheme:
     fq = FakeQuantizeConfig(dtype=f"int{cfg.bits}", group_size=cfg.group_size)
-    scheme = _SCHEMES[cfg.qat_scheme](fq, cfg.backend)
-    scheme.assert_supported(cfg)            # refuse rather than approximate
+    try:
+        factory = _SCHEMES[cfg.qat_scheme]
+    except KeyError:
+        raise UnsupportedSchemeError(              # refuse loudly, don't KeyError
+            f"unknown qat_scheme {cfg.qat_scheme!r}; registered: {sorted(_SCHEMES)}. "
+            f"Refusing rather than approximating.") from None
+    scheme = factory(fq, cfg.backend)
+    scheme.assert_supported(cfg)                   # refuse rather than approximate
     return scheme
 
 

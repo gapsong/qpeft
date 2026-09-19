@@ -25,3 +25,9 @@ def test_qa_lora_trains_only_adapter():
 def test_unbuilt_backend_refuses_rather_than_approximates():
     with pytest.raises((NotImplementedError, UnsupportedSchemeError)):
         build_scheme(EfficientQATConfig(bits=4, group_size=64, backend="mlx"))
+
+
+def test_unknown_qat_scheme_refuses_with_scheme_error():
+    """An unknown qat_scheme is a loud refusal, not a bare KeyError."""
+    with pytest.raises(UnsupportedSchemeError):
+        build_scheme(EfficientQATConfig(bits=4, group_size=64, qat_scheme="does_not_exist"))

@@ -23,47 +23,27 @@ from torchao.quantization.quant_primitives import (
 )
 
 from .config import QuantTuningConfig, TrainableParams
-from .schemes import FakeQuantizeConfig, QuantScheme
+from .schemes import _IntUniformScheme
 
 _QDTYPE = torch.int32
 
 
-class TorchaoIntUniformScheme(QuantScheme):
-    """Group-wise asymmetric affine quantization on torchao primitives."""
+class TorchaoIntUniformScheme(_IntUniformScheme):
+    """Group-wise asymmetric affine quantization on torchao primitives.
 
-    def __init__(self, fq: FakeQuantizeConfig, *, name: str = "int_uniform",
-                 backend: str = "torchao", supports_adapter: bool = True):
-        super().__init__(fq, name=name, backend=backend, supports_adapter=supports_adapter)
-        digits = "".join(c for c in str(fq.dtype) if c.isdigit())
-        self.bits = int(digits) if digits else 4
-        self.group_size = fq.group_size
-
-    @property
-    def qmin(self) -> int:
-        return 0
-
-    @property
-    def qmax(self) -> int:
-        return (1 << self.bits) - 1
+    Shares bit-width, level range and the adapter fold (`merge`) with the pure-torch
+    reference via `_IntUniformScheme`; only the four primitives differ."""
 
     def _block(self):
         return (1, self.group_size)
 
     # -- capability: INT zero-point domain cannot train the zero-point ----------
     def supports(self, config: QuantTuningConfig) -> bool:
+        # torchao's integer zero-point domain cannot carry a continuously trained
+        # zero-point, so refuse those configs (the base assert_supported raises).
         if TrainableParams.ZERO_POINT in config.trainable_params:
             return False
         return super().supports(config)
-
-    def assert_supported(self, config: QuantTuningConfig) -> None:
-        if TrainableParams.ZERO_POINT in config.trainable_params:
-            from .schemes import UnsupportedSchemeError
-            raise UnsupportedSchemeError(
-                f"scheme {self.name!r} on backend {self.backend!r} uses torchao's "
-                f"integer zero-point domain, which cannot train the zero-point. "
-                f"Drop ZERO_POINT from trainable_params (e.g. use the E2E-QP phase) "
-                f"or the pure-torch backend. Refusing rather than approximating.")
-        super().assert_supported(config)
 
     # -- init / primitives ------------------------------------------------------
     def init_qparams(self, weight, group_size: int):
@@ -84,11 +64,4 @@ class TorchaoIntUniformScheme(QuantScheme):
         return dequantize_affine(
             wq, self._block(), s, z, _QDTYPE, self.qmin, self.qmax, output_dtype=s.dtype)
 
-    def merge(self, wq, s, z, adapter=None):
-        """int in, int out. No adapter -> identity. A group-structured adapter folds
-        exactly into the zero-points; codes and scale untouched."""
-        if adapter is None:
-            return wq, s, z
-        delta = adapter.folded_delta()             # (out, n_groups) per-group weight shift
-        z_new = z - delta / s                       # (q - z_new)*s == (q - z)*s + delta
-        return wq, s, z_new
+    # merge (adapter fold) is inherited from _IntUniformScheme -- defined once.

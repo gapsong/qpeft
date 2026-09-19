@@ -6,7 +6,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from qpeft import EfficientQATConfig, QALoraConfig, get_quant_model
+from qpeft import EfficientQATConfig, QALoraConfig, UnsupportedSchemeError, get_quant_model
 from qpeft.tuners.tuners_utils import QuantLinear
 
 IN, OUT = 128, 64
@@ -83,3 +83,22 @@ def test_bias_none_when_base_has_no_bias():
     model = _model(EfficientQATConfig(bits=4, group_size=64, phase="block_ap"), bias=False)
     q = next(m for m in model.modules() if isinstance(m, QuantLinear))
     assert q.bias is None
+
+
+def test_fp16_base_survives_injection_and_forward():
+    """A half-precision base (typical HF model) injects and runs without a dtype crash."""
+    torch.manual_seed(0)
+    base = nn.Linear(IN, OUT, bias=True).half()
+    model = get_quant_model(nn.Sequential(base),
+                            EfficientQATConfig(bits=4, group_size=64, phase="block_ap"))
+    q = next(m for m in model.modules() if isinstance(m, QuantLinear))
+    assert q.scale.dtype == torch.float16 and q.zero_point.dtype == torch.float16
+    y = model(torch.randn(2, IN, dtype=torch.float16))
+    assert y.dtype == torch.float16 and torch.isfinite(y).all()
+
+
+def test_non_rtn_init_refuses_rather_than_approximates():
+    """A non-RTN init must refuse, not silently leave a degenerate scale=1 grid."""
+    with pytest.raises(UnsupportedSchemeError):
+        get_quant_model(nn.Sequential(nn.Linear(IN, OUT)),
+                        EfficientQATConfig(bits=4, group_size=64, init_weights="loftq"))

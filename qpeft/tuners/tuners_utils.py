@@ -8,7 +8,7 @@ from torch import nn
 import torch.nn.functional as F
 
 from ..config import QuantTuningConfig, TrainableParams
-from ..schemes import QuantScheme
+from ..schemes import QuantScheme, UnsupportedSchemeError
 
 
 class AdapterLayer:                          # ~ peft BaseTunerLayer / torchtune AdapterModule
@@ -32,23 +32,37 @@ class QuantLinear(nn.Module, AdapterLayer):  # ~ peft lora.Linear / torchtune QA
         self.merged = False
         tp = set(config.trainable_params)
         n_groups = base.in_features // config.group_size
-        self.weight = nn.Parameter(base.weight.data.clone(),
+        w = base.weight.data
+        # scale/zero_point follow the base weight's dtype and device, so a
+        # half-precision or GPU base (a typical HF model) survives injection.
+        kw = dict(dtype=w.dtype, device=w.device)
+        self.weight = nn.Parameter(w.clone(),
                                    requires_grad=TrainableParams.WEIGHT in tp)
-        self.scale = nn.Parameter(torch.ones(base.out_features, n_groups),
+        self.scale = nn.Parameter(torch.ones(base.out_features, n_groups, **kw),
                                   requires_grad=TrainableParams.SCALE in tp)
-        self.zero_point = nn.Parameter(torch.zeros(base.out_features, n_groups),
+        self.zero_point = nn.Parameter(torch.zeros(base.out_features, n_groups, **kw),
                                        requires_grad=TrainableParams.ZERO_POINT in tp)
         # The bias is part of the base layer, not quantized: kept in full
-        # precision and frozen, so a Linear(bias=True) (common in HF models)
-        # survives injection unchanged.
+        # precision and frozen, so a Linear(bias=True) survives injection unchanged.
         self.bias = (None if base.bias is None
                      else nn.Parameter(base.bias.data.clone(), requires_grad=False))
-        # RTN init so training starts from a real quantization grid, not scale=1.
-        if config.init_weights == "rtn" and hasattr(self.scheme, "init_qparams"):
-            s0, z0 = self.scheme.init_qparams(self.weight.data, config.group_size)
-            with torch.no_grad():
-                self.scale.copy_(s0)
-                self.zero_point.copy_(z0)
+        self._init_qparams(config)
+
+    def _init_qparams(self, config: QuantTuningConfig):
+        """Place the starting quantization grid. RTN is the only init implemented;
+        anything else is refused rather than left at the degenerate scale=1 grid."""
+        if config.init_weights != "rtn":
+            raise UnsupportedSchemeError(
+                f"init_weights={config.init_weights!r} is not implemented; only 'rtn'. "
+                f"Refusing rather than approximating with a degenerate scale=1 grid.")
+        if not hasattr(self.scheme, "init_qparams"):
+            raise UnsupportedSchemeError(
+                f"scheme {self.scheme.name!r} cannot do RTN init (no init_qparams); "
+                f"refusing rather than leaving scale=1.")
+        s0, z0 = self.scheme.init_qparams(self.weight.data, config.group_size)
+        with torch.no_grad():
+            self.scale.copy_(s0)
+            self.zero_point.copy_(z0)
 
     def forward(self, x):
         # After merge the base is a frozen integer artifact -> only dequant it.
@@ -82,10 +96,15 @@ class BaseQuantTuner:                         # ~ peft BaseTuner / LoraModel
         self.inject_adapters()
 
     def inject_adapters(self):                # swap target nn.Linear -> QuantLinear via dispatch
-        for name, module in list(self.model.named_modules()):
-            if self._is_target(name, module):
-                parent, attr = self._resolve(name)
-                setattr(parent, attr, self._create_new_module(module))
+        # Collect target names first, then resolve each against the LIVE tree at
+        # swap time: replacing one module must not invalidate another's path.
+        names = [name for name, module in self.model.named_modules() if self._is_target(name, module)]
+        for name in names:
+            parent, attr = self._resolve(name)
+            module = getattr(parent, attr, None) if parent is not None else None
+            if not isinstance(module, nn.Linear) or isinstance(module, QuantLinear):
+                continue                      # path changed, or already injected
+            setattr(parent, attr, self._create_new_module(module))
 
     def _create_new_module(self, target: nn.Linear):     # ~ LoraModel._create_new_module
         raise NotImplementedError("each method's model overrides this with its dispatch")
@@ -98,5 +117,7 @@ class BaseQuantTuner:                         # ~ peft BaseTuner / LoraModel
         parent = self.model
         *path, attr = dotted.split(".")
         for p in path:
-            parent = getattr(parent, p)
+            parent = getattr(parent, p, None)
+            if parent is None:
+                return None, None             # path no longer exists in the live tree
         return parent, attr
