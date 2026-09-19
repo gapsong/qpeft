@@ -51,8 +51,9 @@ No silent approximation.
 -> `QuantScheme.supports` / `assert_supported` / `UnsupportedSchemeError`, called in `build_scheme`
 
 ### 4. Backend is implementation, not contract
-`qat_scheme=` names the *contract* (the representation), `backend=` names the *implementation* (torchao, mlx, ...).
-So torchao and MLX are two implementations of the same `QuantScheme` interface, both secured by the same equivalence gate.
+`qat_scheme=` names the *contract* (the representation), `backend=` names the *implementation* (`auto`/`torch`, `torchao`, `mlx`).
+A backend names a *provider* (who implements the primitives), never a device: the device is orthogonal and follows the model's tensors.
+So torch, torchao and MLX are implementations of the same `QuantScheme` interface, all secured by the same equivalence gate.
 That is the decoupling torchtune lacks.
 -> `QuantTuningConfig.backend` + `build_scheme` (registry per contract, backend chosen in the factory)
 

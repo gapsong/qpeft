@@ -25,7 +25,8 @@ class QuantTuningConfig:                    # ~ peft.PeftConfig (base for every 
     bits: int = 4
     group_size: int = 64
     qat_scheme: str = "int_uniform"         # names the (fake_quant, fuse) CONTRACT (unsloth-style)
-    backend: str = "auto"                   # names the IMPLEMENTATION: "torchao_cuda" | "mlx" | "auto"
+    backend: str = "auto"                   # provider that implements the contract: "auto"|"torch"|"torchao"|"mlx"
+                                            # (device is orthogonal: it follows the model's tensors)
     target_modules: Optional[list[str]] = None
     task_type: Optional[str] = None
     init_weights: str = "rtn"               # ~ peft init_lora_weights: "rtn"|"loftq"|"lqlora"|"apiq"

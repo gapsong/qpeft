@@ -31,3 +31,12 @@ def test_unknown_qat_scheme_refuses_with_scheme_error():
     """An unknown qat_scheme is a loud refusal, not a bare KeyError."""
     with pytest.raises(UnsupportedSchemeError):
         build_scheme(EfficientQATConfig(bits=4, group_size=64, qat_scheme="does_not_exist"))
+
+
+def test_backend_names_are_providers():
+    """'auto' and 'torch' both select the pure-torch reference; unknown provider refuses."""
+    for backend in ("auto", "torch"):
+        s = build_scheme(EfficientQATConfig(bits=4, group_size=64, phase="e2e_qp", backend=backend))
+        assert type(s).__name__ == "ReferenceIntUniformScheme"
+    with pytest.raises(UnsupportedSchemeError):        # a device suffix is no longer a backend
+        build_scheme(EfficientQATConfig(bits=4, group_size=64, backend="torchao_cuda"))
