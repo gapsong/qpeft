@@ -111,11 +111,45 @@ It ships a dependency-free pure-torch reference backend so the contract is real 
 Both backends are measured at the same equivalence gate.
 `qpeft` owns only the seam torchao leaves open: folding the adapter into the `zero_point`, plus the multi-phase QAT schedule, with a test that proves both paths agree.
 
+## Why not inside 🤗 peft?
+
+Building this as a peft extension would have meant touching far too many places at once.
+peft is built around one assumption: a frozen base plus a separate adapter, merged by dequantizing.
+qpeft breaks that assumption on purpose, and every place that relies on it would have needed a change:
+
+- **The trainable set.**
+  peft has no notion of training the quantization parameters (`scale`, `zero_point`) or the base weights through a fake-quant; its tuners only add adapter parameters.
+- **The merge.**
+  `merge_and_unload()` dequantizes by design; qpeft needs a merge that returns `(wq', s', z')` and a test that proves it equals training.
+- **The training loop.**
+  EfficientQAT trains block by block against a reconstruction loss, then end to end with only the scales, so the standard Hugging Face `Trainer` would have to be adapted for each phase.
+- **The framing.**
+  QAT that trains full weights (EfficientQAT Block-AP) is not parameter-efficient fine-tuning, so it would not have fit cleanly into peft's scope.
+
+So qpeft is a small, separate package that **mirrors peft's names and structure** (`<Method>Config`, `get_quant_model`, `merge_and_unload`) and still works on any Hugging Face model through module injection, without patching peft or the `Trainer`.
+
 ## What it deliberately is NOT
 
 A coherent slice, not a do-everything wrapper: **weight-only, grouped, uniform-int, decoder LLMs.**
 Explicitly out of scope: codebook / vector quant (AQLM, QuIP#) and SBC-style stochastic binary codecs.
 Those are a different substrate and a different inference operator; they belong in a sibling project, not here.
+
+## Roadmap: methods that fit the pattern
+
+Every method below is a config over `{weight, scale, zero_point, adapter}` plus at most one merge operation, and each lands only together with its `check_merge_equivalence` test.
+
+| Method | Trains | Merge folds into | Status |
+|---|---|---|---|
+| [EfficientQAT](https://arxiv.org/abs/2407.11062) | 🔥 weight, scale, zero_point → then 🔥 scale | nothing to fold | ✅ implemented |
+| [QA-LoRA](https://arxiv.org/abs/2309.14717) | 🔥 group-pooled adapter | `zero_point` | ✅ implemented |
+| [PEQA](https://arxiv.org/abs/2305.14152) | 🔥 scale | nothing to fold | ✅ a config (`trainable_params=(SCALE,)`) |
+| [QA-BLoRA](https://arxiv.org/abs/2407.17029) | 🔥 balanced adapter (compressed inputs *and* outputs, higher rank) | `zero_point` | 🔜 next |
+| [L4Q](https://arxiv.org/abs/2402.04902) | 🔥 LoRA + quantization step size, jointly | codes (+ scale, zero_point) | 📋 planned |
+| [LR-QAT](https://arxiv.org/abs/2406.06385) | 🔥 low-rank term *inside* the rounding | codes | 📋 planned |
+| [LoTA-QAF](https://arxiv.org/abs/2505.18724) | 🔥 ternary adapter aligned with the grid | codes (lossless) | 📋 planned |
+
+The table splits into two merge families: the adapter folds into the **zero-point** (QA-LoRA, QA-BLoRA; codes untouched) or into the **integer codes** (LR-QAT, LoTA-QAF).
+Both are the same `merge(wq, s, z, adapter) -> (wq', s', z')` signature.
 
 ## Structure (mirrors peft)
 
