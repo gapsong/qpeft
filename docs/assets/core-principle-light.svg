@@ -16,37 +16,37 @@
 <text x="406" y="122" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="12" font-weight="400" fill="#6b7280" text-anchor="middle">adapter</text>
 <line x1="36" y1="132" x2="430" y2="132" stroke="#d1d5db" stroke-width="1"/>
 <text x="40" y="162" font-family="'Segoe UI','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="15" font-weight="600" fill="#1f2937" text-anchor="start">PEQA</text>
-<circle cx="196" cy="162" r="8" fill="none" stroke="#d1d5db" stroke-width="1.5"/>
-<circle cx="258" cy="162" r="9" fill="url(#acc)"/>
-<circle cx="332" cy="162" r="8" fill="none" stroke="#d1d5db" stroke-width="1.5"/>
-<circle cx="406" cy="162" r="8" fill="none" stroke="#d1d5db" stroke-width="1.5"/>
+<text x="196" y="162" font-size="18" text-anchor="middle" dominant-baseline="central">❄️</text>
+<text x="258" y="162" font-size="20" text-anchor="middle" dominant-baseline="central">🔥</text>
+<text x="332" y="162" font-size="18" text-anchor="middle" dominant-baseline="central">❄️</text>
+<text x="406" y="162" font-size="18" text-anchor="middle" dominant-baseline="central">❄️</text>
 <line x1="36" y1="190" x2="430" y2="190" stroke="#d1d5db" stroke-width="1"/>
 <text x="40" y="217" font-family="'Segoe UI','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="15" font-weight="600" fill="#1f2937" text-anchor="start">EfficientQAT</text>
 <text x="40" y="234" font-family="'Segoe UI','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="12" font-weight="400" fill="#6b7280" text-anchor="start">Block-AP</text>
-<circle cx="196" cy="220" r="9" fill="url(#acc)"/>
-<circle cx="258" cy="220" r="9" fill="url(#acc)"/>
-<circle cx="332" cy="220" r="9" fill="url(#acc)"/>
-<circle cx="406" cy="220" r="8" fill="none" stroke="#d1d5db" stroke-width="1.5"/>
+<text x="196" y="220" font-size="20" text-anchor="middle" dominant-baseline="central">🔥</text>
+<text x="258" y="220" font-size="20" text-anchor="middle" dominant-baseline="central">🔥</text>
+<text x="332" y="220" font-size="20" text-anchor="middle" dominant-baseline="central">🔥</text>
+<text x="406" y="220" font-size="18" text-anchor="middle" dominant-baseline="central">❄️</text>
 <line x1="36" y1="248" x2="430" y2="248" stroke="#d1d5db" stroke-width="1"/>
 <text x="40" y="275" font-family="'Segoe UI','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="15" font-weight="600" fill="#1f2937" text-anchor="start">EfficientQAT</text>
 <text x="40" y="292" font-family="'Segoe UI','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="12" font-weight="400" fill="#6b7280" text-anchor="start">E2E-QP</text>
-<circle cx="196" cy="278" r="8" fill="none" stroke="#d1d5db" stroke-width="1.5"/>
-<circle cx="258" cy="278" r="9" fill="url(#acc)"/>
-<circle cx="332" cy="278" r="8" fill="none" stroke="#d1d5db" stroke-width="1.5"/>
-<circle cx="406" cy="278" r="8" fill="none" stroke="#d1d5db" stroke-width="1.5"/>
+<text x="196" y="278" font-size="18" text-anchor="middle" dominant-baseline="central">❄️</text>
+<text x="258" y="278" font-size="20" text-anchor="middle" dominant-baseline="central">🔥</text>
+<text x="332" y="278" font-size="18" text-anchor="middle" dominant-baseline="central">❄️</text>
+<text x="406" y="278" font-size="18" text-anchor="middle" dominant-baseline="central">❄️</text>
 <line x1="36" y1="306" x2="430" y2="306" stroke="#d1d5db" stroke-width="1"/>
 <text x="40" y="336" font-family="'Segoe UI','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="15" font-weight="600" fill="#1f2937" text-anchor="start">QA-LoRA</text>
-<circle cx="196" cy="336" r="8" fill="none" stroke="#d1d5db" stroke-width="1.5"/>
-<circle cx="258" cy="336" r="8" fill="none" stroke="#d1d5db" stroke-width="1.5"/>
-<circle cx="332" cy="336" r="8" fill="none" stroke="#d1d5db" stroke-width="1.5"/>
-<circle cx="406" cy="336" r="9" fill="url(#acc)"/>
+<text x="196" y="336" font-size="18" text-anchor="middle" dominant-baseline="central">❄️</text>
+<text x="258" y="336" font-size="18" text-anchor="middle" dominant-baseline="central">❄️</text>
+<text x="332" y="336" font-size="18" text-anchor="middle" dominant-baseline="central">❄️</text>
+<text x="406" y="336" font-size="20" text-anchor="middle" dominant-baseline="central">🔥</text>
 <path d="M398 348 Q 369.0 372 338 350" stroke="#db2777" stroke-width="1.6" fill="none" stroke-dasharray="4 3" marker-end="url(#ahp)"/>
 <text x="369.0" y="380" font-family="'Segoe UI','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="11" font-weight="400" fill="#db2777" text-anchor="middle">folds on merge</text>
 <text x="40" y="372" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="12" font-weight="400" fill="#6b7280" text-anchor="start">TrainableParams</text>
-<circle cx="170" cy="368" r="6" fill="url(#acc)"/>
-<text x="181" y="372" font-family="'Segoe UI','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="12" font-weight="400" fill="#6b7280" text-anchor="start">trained</text>
-<circle cx="250" cy="368" r="5.5" fill="none" stroke="#d1d5db" stroke-width="1.5"/>
-<text x="261" y="372" font-family="'Segoe UI','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="12" font-weight="400" fill="#6b7280" text-anchor="start">frozen</text>
+<text x="170" y="373" font-family="'Segoe UI','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="14" font-weight="400" fill="#1f2937" text-anchor="start">🔥</text>
+<text x="190" y="372" font-family="'Segoe UI','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="12" font-weight="400" fill="#6b7280" text-anchor="start">trained</text>
+<text x="250" y="373" font-family="'Segoe UI','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="14" font-weight="400" fill="#1f2937" text-anchor="start">❄️</text>
+<text x="270" y="372" font-family="'Segoe UI','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="12" font-weight="400" fill="#6b7280" text-anchor="start">frozen</text>
 <circle cx="500" cy="44" r="13" fill="url(#acc)"/>
 <text x="500" y="49" font-family="'Segoe UI','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="14" font-weight="700" fill="#fff" text-anchor="middle">2</text>
 <text x="522" y="50" font-family="'Segoe UI','Helvetica Neue',Helvetica,Arial,sans-serif" font-size="18" font-weight="700" fill="#1f2937" text-anchor="start">fake_quant must match merge</text>
