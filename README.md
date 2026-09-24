@@ -11,7 +11,7 @@
   <img alt="Python" src="https://img.shields.io/badge/python-%E2%89%A53.10-3776AB?logo=python&logoColor=white">
   <img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-%E2%89%A52.4-EE4C2C?logo=pytorch&logoColor=white">
   <img alt="torchao" src="https://img.shields.io/badge/backend-torch%20%7C%20torchao-6366f1">
-  <img alt="merge" src="https://img.shields.io/badge/merge-stays%20int-ec4899">
+  <img alt="merge" src="https://img.shields.io/badge/merge-codes%20untouched-ec4899">
   <img alt="status" src="https://img.shields.io/badge/status-alpha-lightgrey">
 </p>
 
