@@ -8,15 +8,23 @@ from .schemes import QuantScheme
 
 
 @torch.no_grad()
-def check_merge_equivalence(scheme: QuantScheme, w, s, z, adapter, x, atol: float = 1e-4):
+def check_merge_equivalence(scheme: QuantScheme, w, s, z, adapter, x, atol: float = 1e-4,
+                            codes=None):
     """The spine: the training fake_quant path must equal the merged (still-quantized) path.
 
     If this fails, the fake_quant does not match the fuse -- and a fake-quant that
-    does not match fuse is worse than none. Run this per layer before trusting a scheme."""
-    train = F.linear(x, scheme.fake_quant(w, s, z))
+    does not match fuse is worse than none. Run this per layer before trusting a scheme.
+
+    `codes`: a layer's frozen integer codes (trainable set without WEIGHT). The
+    training path is then dequant(codes, s, z), and the merge starts from them."""
+    if codes is None:
+        train = F.linear(x, scheme.fake_quant(w, s, z))
+        codes = scheme.quantize(w, s, z)
+    else:
+        train = F.linear(x, scheme.dequant(codes, s, z))
     if adapter is not None:
         train = train + adapter(x)
-    wq, s2, z2 = scheme.merge(scheme.quantize(w, s, z), s, z, adapter)
+    wq, s2, z2 = scheme.merge(codes, s, z, adapter)
     infer = F.linear(x, scheme.dequant(wq, s2, z2))
     max_err = (train - infer).abs().max().item()
     assert torch.allclose(train, infer, atol=atol), f"merge != fake_quant, max|delta|={max_err}"

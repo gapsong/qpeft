@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="680" height="180" viewBox="0 0 680 180" role="img" aria-label="qpeft">
+<svg xmlns="http://www.w3.org/2000/svg" width="740" height="180" viewBox="0 0 740 180" role="img" aria-label="qpeft">
   <defs>
     <linearGradient id="acc" x1="0" y1="1" x2="1" y2="0">
       <stop offset="0" stop-color="#6366f1"/>
@@ -20,5 +20,5 @@
   </g>
   <!-- wordmark -->
   <text x="190" y="108" font-family="'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="92" font-weight="700" letter-spacing="-2" fill="#f3f4f6"><tspan fill="url(#acc)">q</tspan>peft</text>
-  <text x="194" y="146" font-family="'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="21" fill="#9ca3af">quantization-aware tuning · the merge stays int</text>
+  <text x="194" y="146" font-family="'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="21" fill="#9ca3af">codes untouched · the adapter folds into the shift</text>
 </svg>

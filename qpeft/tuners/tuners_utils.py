@@ -47,6 +47,12 @@ class QuantLinear(nn.Module, AdapterLayer):  # ~ peft lora.Linear / torchtune QA
         self.bias = (None if base.bias is None
                      else nn.Parameter(base.bias.data.clone(), requires_grad=False))
         self._init_qparams(config)
+        # A frozen weight means frozen integer codes (EfficientQAT E2E-QP, PEQA,
+        # QA-LoRA): quantize ONCE here, so training the scale/zero-point moves the
+        # grid, never which level a weight sits on. Re-rounding w/s+z every step
+        # would let a scale-only phase silently re-assign the codes.
+        self.register_buffer("frozen_codes", None if TrainableParams.WEIGHT in tp
+                             else self.scheme.quantize(self.weight, self.scale, self.zero_point))
 
     def _init_qparams(self, config: QuantTuningConfig):
         """Place the starting quantization grid. RTN is the only init implemented;
@@ -70,7 +76,10 @@ class QuantLinear(nn.Module, AdapterLayer):  # ~ peft lora.Linear / torchtune QA
             return F.linear(x, self.scheme.dequant(self.qweight, self.scale, self.zero_point), self.bias)
         # Training path: the STE fake_quant carries gradients to whichever of
         # {weight, scale, zero_point} are trainable; the adapter (if any) is added.
-        w_hat = self.scheme.fake_quant(self.weight, self.scale, self.zero_point)
+        if self.frozen_codes is not None:     # codes fixed, gradients reach s / z only
+            w_hat = self.scheme.dequant(self.frozen_codes, self.scale, self.zero_point)
+        else:
+            w_hat = self.scheme.fake_quant(self.weight, self.scale, self.zero_point)
         y = F.linear(x, w_hat, self.bias)
         return y + self.adapter(x) if self.adapter is not None else y
 
@@ -80,7 +89,8 @@ class QuantLinear(nn.Module, AdapterLayer):  # ~ peft lora.Linear / torchtune QA
         folds into the (float) zero-points."""
         if self.merged:
             return
-        codes = self.scheme.quantize(self.weight, self.scale, self.zero_point)
+        codes = (self.frozen_codes if self.frozen_codes is not None
+                 else self.scheme.quantize(self.weight, self.scale, self.zero_point))
         wq, s, z = self.scheme.merge(codes, self.scale.data, self.zero_point.data, self.adapter)
         self.register_buffer("qweight", wq)                      # int32 codes, the merged artifact
         with torch.no_grad():
