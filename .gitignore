@@ -13,4 +13,3 @@ venv/
 .DS_Store
 CLAUDE.local.md
 TASKS.md
-runs/
