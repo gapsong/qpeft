@@ -44,6 +44,13 @@ The quantized-training space has a gap that nobody yet owns as *one* feature.
 
 Two ideas carry everything.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/core-principle-dark.svg">
+    <img alt="The trainable set is the first axis; fake_quant must match merge" src="docs/assets/core-principle-light.svg" width="100%">
+  </picture>
+</p>
+
 1. **The trainable set is the first axis.**
    Not "adapter vs. frozen", but a choice from `{weight, scale, zero_point, adapter}` (`TrainableParams`).
    This makes PEQA (`scale` only), EfficientQAT (`weight + scale + zero_point`, then `scale`) and QA-LoRA (`adapter` folds into `zero_point`) **configurations over one substrate**, not separate subsystems.
