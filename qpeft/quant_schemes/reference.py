@@ -13,7 +13,7 @@ class ReferenceIntUniformScheme(_IntUniformScheme):
     through estimator for training. The torchao/MLX backends are separate
     implementations of the SAME contract, measured at the SAME gate.
 
-        code  = clamp(round(w / s + z), 0, 2**bits - 1)     # quantize (int artifact)
+        code  = clamp(round(w / s) + z, 0, 2**bits - 1)     # quantize (int artifact)
         w_hat = (code - z) * s                              # dequant
         fake_quant = w_hat, with STE gradient to {w, s, z}  # training surrogate
 
@@ -37,8 +37,8 @@ class ReferenceIntUniformScheme(_IntUniformScheme):
     def _codes_ste(self, w, s, z):
         s, z = self.clamp_scale(s), self.round_zero_point(z)
         se, ze = self._expand(s, w.shape[-1]), self._expand(z, w.shape[-1])
-        q = w / se + ze
-        q = _ste(q.round(), q)                          # straight-through round
+        q = w / se
+        q = _ste(q.round(), q) + ze                     # straight-through round
         return torch.clamp(q, self.qmin, self.qmax), se, ze
 
     def fake_quant(self, w, s, z):                      # STE surrogate used in TRAINING

@@ -31,6 +31,17 @@ class QuantModel(nn.Module):                  # ~ peft PeftModel
     def forward(self, *args, **kwargs):
         return self.base(*args, **kwargs)
 
+    # -- gradient checkpointing (~ peft) ----------------------------------------
+    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
+        if not hasattr(self.base, "gradient_checkpointing_enable"):
+            raise ValueError(f"{type(self.base).__name__} does not support gradient checkpointing "
+                             "(no gradient_checkpointing_enable); keep gradient_checkpointing=False.")
+        self.base.gradient_checkpointing_enable(gradient_checkpointing_kwargs=gradient_checkpointing_kwargs)
+
+    def gradient_checkpointing_disable(self):
+        if hasattr(self.base, "gradient_checkpointing_disable"):
+            self.base.gradient_checkpointing_disable()
+
     # -- helpers ---------------------------------------------------------------
     def quant_layers(self) -> list[QuantLinear]:
         return [m for m in self.base.modules() if isinstance(m, QuantLinear)]

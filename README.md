@@ -74,7 +74,7 @@ Weight-only, group-wise, asymmetric affine quantization.
 Per group of `group_size` input columns there is one scale `s` and one zero-point `z`.
 
 ```
-code  = clamp(round(w / s + z), 0, 2**bits - 1)     # the integer codes (int32)
+code  = clamp(round(w / s) + z, 0, 2**bits - 1)     # the integer codes (int32)
 w_hat = (code - z) * s                              # dequant
 ```
 
