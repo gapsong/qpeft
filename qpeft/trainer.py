@@ -140,6 +140,8 @@ class QATTrainer(Trainer):
         if getattr(args.save_strategy, "value", args.save_strategy) != "no":
             raise ValueError("mid-training checkpoints are not supported (they are not the int "
                              "artifact); keep save_strategy='no' and call trainer.save_model() at the end.")
+        if args.push_to_hub:
+            raise ValueError(f"push_to_hub is not supported; {self._SAVE_MSG}")
         bits = model.config.bits
         if args.weight_lr is None:
             args.weight_lr = 2e-5 if bits == 2 else 1e-5
