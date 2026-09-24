@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="180" viewBox="0 0 680 180" role="img" aria-label="qpeft">
+  <defs>
+    <linearGradient id="acc" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#6366f1"/>
+      <stop offset="1" stop-color="#ec4899"/>
+    </linearGradient>
+  </defs>
+  <!-- icon: continuous weight (dashed) snapped onto integer levels (steps) -->
+  <g transform="translate(20 20)">
+    <rect width="140" height="140" rx="32" fill="#f5f3ff"/>
+    <g stroke="#e5e7eb" stroke-width="2">
+      <line x1="24" y1="40" x2="116" y2="40"/>
+      <line x1="24" y1="64" x2="116" y2="64"/>
+      <line x1="24" y1="88" x2="116" y2="88"/>
+      <line x1="24" y1="112" x2="116" y2="112"/>
+    </g>
+    <line x1="24" y1="124" x2="116" y2="28" stroke="#6b7280" stroke-width="3" stroke-dasharray="5 6" stroke-linecap="round"/>
+    <path d="M24 112 H47 V88 H70 V64 H93 V40 H116" fill="none" stroke="url(#acc)" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="116" cy="40" r="10" fill="#ec4899"/>
+  </g>
+  <!-- wordmark -->
+  <text x="190" y="108" font-family="'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="92" font-weight="700" letter-spacing="-2" fill="#1f2937"><tspan fill="url(#acc)">q</tspan>peft</text>
+  <text x="194" y="146" font-family="'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="21" fill="#6b7280">quantization-aware tuning · the merge stays int</text>
+</svg>

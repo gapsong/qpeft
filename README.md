@@ -1,6 +1,26 @@
-# qpeft
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/qpeft-logo-dark.svg">
+    <img alt="qpeft" src="docs/assets/qpeft-logo-light.svg" width="520">
+  </picture>
+</h1>
 
-**Quantization-aware, PEFT-style tuning whose merge stays quantized.**
+<h3 align="center">Quantization-aware, PEFT-style tuning whose merge stays quantized.</h3>
+
+<p align="center">
+  <img alt="Python" src="https://img.shields.io/badge/python-%E2%89%A53.10-3776AB?logo=python&logoColor=white">
+  <img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-%E2%89%A52.4-EE4C2C?logo=pytorch&logoColor=white">
+  <img alt="torchao" src="https://img.shields.io/badge/backend-torch%20%7C%20torchao-6366f1">
+  <img alt="merge" src="https://img.shields.io/badge/merge-stays%20int-ec4899">
+  <img alt="status" src="https://img.shields.io/badge/status-alpha-lightgrey">
+</p>
+
+<p align="center">
+  <a href="#basic-usage">Quickstart</a> ·
+  <a href="docs/DESIGN.md">Design</a> ·
+  <a href="#structure-mirrors-peft">Structure</a> ·
+  <a href="#status">Status</a>
+</p>
 
 `qpeft` trains over a quantized substrate.
 Unlike `peft`, its `merge_and_unload()` returns an *integer* model instead of dequantizing back to fp16.
