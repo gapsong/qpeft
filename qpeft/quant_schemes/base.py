@@ -27,7 +27,7 @@ SCALE_MIN, SCALE_MAX = 1e-4, 1e4
 def _ste(value, x):
     """Straight-through estimator: forward is EXACTLY `value`, gradient is that
     of `x`. (`x + (value - x).detach()` is not exact in floating point.)"""
-    return value + (x - x.detach())
+    return value.detach() + (x - x.detach())
 
 
 class UnsupportedSchemeError(RuntimeError):
