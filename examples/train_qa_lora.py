@@ -62,7 +62,8 @@ def main():
     for name, m in model.named_modules():
         if isinstance(m, QuantLinear):
             err = check_merge_equivalence(
-                m.scheme, m.weight, m.scale, m.zero_point, m.adapter, torch.randn(8, in_f))
+                m.scheme, m.weight, m.scale, m.zero_point, m.adapter, torch.randn(8, in_f),
+                codes=m.frozen_codes)
             print(f"    check_merge_equivalence[{name or 'root'}] OK  max|delta|={err:.2e}")
 
     with torch.no_grad():

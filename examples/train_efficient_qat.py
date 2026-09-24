@@ -46,7 +46,8 @@ def check_equivalence(model, in_f):
         if isinstance(m, QuantLinear) and not m.merged:
             x = torch.randn(8, in_f)
             err = check_merge_equivalence(
-                m.scheme, m.weight, m.scale, m.zero_point, m.adapter, x)
+                m.scheme, m.weight, m.scale, m.zero_point, m.adapter, x,
+                codes=m.frozen_codes)
             print(f"    check_merge_equivalence[{name or 'root'}] OK  max|delta|={err:.2e}")
 
 
