@@ -119,7 +119,8 @@ multi-adapter, DPO/RLHF trainers, MLX backend, ternary.
 ## Acceptance criteria / tests to write first
 
 - [x] Each row of the refusal table has a test (no compute happens before the error)
-- [x] EfficientQAT: after `train()`, Block-AP changed {weight, scale, zero_point},
+- [x] EfficientQAT: after `train()`, Block-AP changed {weight, scale, zero_point}
+      (the weight via the frozen codes, the fp weight is dropped at the hand-over),
       E2E-QP changed only {scale}, codes frozen in E2E-QP
 - [x] QA-LoRA: out of scope for QATTrainer (refused); covered by `get_quant_model` tests
 - [x] Optimizer has the right param groups and learning rates per phase

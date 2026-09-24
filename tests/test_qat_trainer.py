@@ -65,8 +65,10 @@ def _snap(qmodel):
     out = {}
     for name, m in qmodel.base.named_modules():
         if isinstance(m, QuantLinear):
-            for k in ("weight", "scale", "zero_point"):
-                out[f"{name}.{k}"] = getattr(m, k).detach().clone()
+            out[f"{name}.scale"] = m.scale.detach().clone()
+            out[f"{name}.zero_point"] = m.zero_point.detach().clone()
+            out[f"{name}.codes"] = (m.qweight.clone() if m.codes_frozen
+                                    else m.scheme.quantize(m.weight, m.scale, m.zero_point))
     return out
 
 
@@ -130,18 +132,20 @@ def test_refuses_mid_training_checkpoints(tmp_path):
 def test_runs_both_phases_with_the_right_trainable_sets(tmp_path):
     trainer = _trainer(_llama(), tmp_path, quant_config=_cfg())
     before = _snap(trainer.model)
+    w0 = {id(m): m.weight.detach().clone() for m in trainer.model.quant_layers()}
 
     # Record the state right when E2E-QP starts (after Block-AP + hand-over).
     import qpeft.trainer as T
-    after_block_ap = {}
+    after_block_ap, grid = {}, {}
     orig = T.Trainer.train
 
     def spy(self, *a, **kw):
         after_block_ap.update(_snap(self.model))
+        grid.update({id(m): (m.scale.detach().clone(), m.zero_point.detach().clone())
+                     for m in self.model.quant_layers()})
         layers = self.model.quant_layers()
-        assert all(m.codes_frozen for m in layers)
-        assert {n for m in layers for n in ("weight", "scale", "zero_point")
-                if getattr(m, n).requires_grad} == {"scale"}
+        assert all(m.codes_frozen and m.weight is None for m in layers)
+        assert {n for m in layers for n in ("scale", "zero_point") if getattr(m, n).requires_grad} == {"scale"}
         return orig(self, *a, **kw)
 
     T.Trainer.train = spy
@@ -150,7 +154,10 @@ def test_runs_both_phases_with_the_right_trainable_sets(tmp_path):
     finally:
         T.Trainer.train = orig
 
-    assert _changed_kinds(before, after_block_ap) == {"weight", "scale", "zero_point"}
+    assert _changed_kinds(before, after_block_ap) == {"codes", "scale", "zero_point"}
+    # the new grid alone would also change the codes; the weight moved too:
+    assert any(not torch.equal(m.qweight, m.scheme.quantize(w0[id(m)], *grid[id(m)]))
+               for m in trainer.model.quant_layers())
     assert _changed_kinds(after_block_ap, _snap(trainer.model)) == {"scale"}
 
 

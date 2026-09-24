@@ -65,8 +65,9 @@ def main():
     # the integer codes are FROZEN and only the scale stays trainable.
     model = get_quant_model(model, e2e_qp)
     q = next(m for m in model.modules() if isinstance(m, QuantLinear))
-    trainable = {n for n in ("weight", "scale", "zero_point") if getattr(q, n).requires_grad}
-    assert q.codes_frozen and trainable == {"scale"}, trainable
+    trainable = {n for n in ("weight", "scale", "zero_point")
+                 if getattr(q, n) is not None and getattr(q, n).requires_grad}
+    assert q.codes_frozen and q.weight is None and trainable == {"scale"}, trainable
     codes = q.qweight.clone()
 
     # Phase 2, E2E-QP: only the step size trains, on top of fixed codes.

@@ -105,12 +105,14 @@ class QuantLinear(nn.Module, AdapterLayer):  # ~ peft lora.Linear / torchtune QA
     def freeze_codes(self):
         """Fix the integer codes from the current (weight, scale, zero_point).
         Equivalent to the official EfficientQAT hand-over (quant_inplace + pack):
-        from here on the codes are an int32 buffer and never re-rounded."""
+        from here on the codes are an int32 buffer and never re-rounded, and the
+        fp weight is dropped."""
         if self.codes_frozen or self.merged:
             return
         cd = self.compute_dtype
         self.register_buffer("qweight", self.scheme.quantize(
             self.weight.to(cd), self.scale.to(cd), self.zero_point.to(cd)))
+        self.weight = None
         self.codes_frozen = True
 
     def apply_config(self, config: QuantTuningConfig):
@@ -135,7 +137,8 @@ class QuantLinear(nn.Module, AdapterLayer):  # ~ peft lora.Linear / torchtune QA
             raise UnsupportedSchemeError(
                 "codes are frozen; making the weight trainable again would let weight and "
                 "codes diverge. Refusing.")
-        self.weight.requires_grad_(TrainableParams.WEIGHT in tp)
+        if self.weight is not None:
+            self.weight.requires_grad_(TrainableParams.WEIGHT in tp)
         self.scale.requires_grad_(TrainableParams.SCALE in tp)
         self.zero_point.requires_grad_(TrainableParams.ZERO_POINT in tp)
         if self.adapter is not None:
@@ -172,9 +175,9 @@ class QuantLinear(nn.Module, AdapterLayer):  # ~ peft lora.Linear / torchtune QA
     def to_merged_skeleton(self):
         """Turn a freshly injected layer into an empty merged layer of the right
         shape, so a saved merged state_dict can be loaded into it (strict)."""
-        out_f, in_f = self.weight.shape
-        self.register_buffer("qweight", torch.zeros(out_f, in_f, dtype=torch.int32,
-                                                    device=self.weight.device))
+        ref = self.weight if self.weight is not None else self.qweight
+        out_f, in_f = ref.shape
+        self.register_buffer("qweight", torch.zeros(out_f, in_f, dtype=torch.int32, device=ref.device))
         self.weight = None
         self.adapter = None
         cd = self.compute_dtype       # a merged artifact stores scale / zero_point in the base dtype

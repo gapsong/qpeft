@@ -165,9 +165,12 @@ def test_merge_with_nan_adapter_refuses_and_leaves_layer_untouched():
     layer = next(m for m in model.modules() if isinstance(m, QuantLinear))
     with torch.no_grad():
         layer.adapter.B[0, 0] = float("nan")
+    codes, scale, zero_point = layer.qweight.clone(), layer.scale.clone(), layer.zero_point.clone()
     with pytest.raises(ValueError, match="NaN"):
         layer.merge()
-    assert not layer.merged and layer.weight is not None and layer.adapter is not None
+    assert not layer.merged and layer.adapter is not None
+    assert torch.equal(layer.qweight, codes) and torch.equal(layer.scale, scale)
+    assert torch.equal(layer.zero_point, zero_point)
 
 
 # --- save -> load: every key equal (peft _test_save_pretrained) ----------------------

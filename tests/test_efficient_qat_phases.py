@@ -49,7 +49,7 @@ def _layers(model):
 def _snapshot(model):
     def grab(t):
         return None if t is None else t.detach().clone()
-    return [{k: grab(getattr(layer, k)) for k in ("weight", "scale", "zero_point", "bias")}
+    return [{k: grab(getattr(layer, k, None)) for k in ("weight", "qweight", "scale", "zero_point", "bias")}
             for layer in _layers(model)]
 
 
@@ -64,9 +64,14 @@ def _train(model, steps=20, lr=1e-2):
         opt.step()
 
 
+def _trainable(layer):
+    return {n for n in ("weight", "scale", "zero_point")
+            if getattr(layer, n) is not None and getattr(layer, n).requires_grad}
+
+
 def _assert_only_allowed_changed(before, after, allowed):
     for i, (b, a) in enumerate(zip(before, after)):
-        for name in ("weight", "scale", "zero_point", "bias"):
+        for name in ("weight", "qweight", "scale", "zero_point", "bias"):
             if b[name] is None:
                 continue
             changed = not torch.equal(b[name], a[name])
@@ -82,10 +87,9 @@ def _assert_only_allowed_changed(before, after, allowed):
 def test_requires_grad_matches_phase(phase):
     model = get_quant_model(_base(), EfficientQATConfig(bits=4, group_size=64, phase=phase))
     for layer in _layers(model):
-        trainable = {n for n in ("weight", "scale", "zero_point")
-                     if getattr(layer, n).requires_grad}
-        assert trainable == TRAINABLE[phase]
+        assert _trainable(layer) == TRAINABLE[phase]
         assert layer.bias is None or not layer.bias.requires_grad
+        assert (layer.weight is None) == (phase == "e2e_qp")
 
 
 # --- 2. training changes exactly the allowed set ---------------------------------
@@ -109,11 +113,11 @@ def test_e2e_qp_codes_are_frozen_when_scale_moves():
     of using the frozen codes."""
     model = get_quant_model(_base(), EfficientQATConfig(bits=4, group_size=64, phase="e2e_qp"))
     layer = _layers(model)[0]
-    codes0 = layer.scheme.quantize(layer.weight, layer.scale, layer.zero_point)
+    codes0 = layer.qweight.clone()
 
     with torch.no_grad():
         layer.scale.mul_(1.5)
-        x = torch.randn(8, layer.weight.shape[1])
+        x = torch.randn(8, codes0.shape[1])
         expected = F.linear(x, layer.scheme.dequant(codes0, layer.scale, layer.zero_point), layer.bias)
         got = layer(x)
     assert torch.allclose(got, expected, atol=1e-6), \
@@ -137,11 +141,12 @@ def test_schedule_switches_trainable_set_and_keeps_phase1_results():
 
     model = get_quant_model(base, phase2_cfg)
     for layer in _layers(model):
-        trainable = {n for n in ("weight", "scale", "zero_point") if getattr(layer, n).requires_grad}
-        assert trainable == TRAINABLE["e2e_qp"], f"after switch, trainable = {trainable}"
-    for b, a in zip(after_block_ap, _snapshot(model)):
-        for name in ("weight", "scale", "zero_point"):
+        assert _trainable(layer) == TRAINABLE["e2e_qp"], f"after switch, trainable = {_trainable(layer)}"
+    for layer, b, a in zip(_layers(model), after_block_ap, _snapshot(model)):
+        for name in ("scale", "zero_point"):
             assert torch.equal(b[name], a[name]), f"{name} was re-initialized at the phase switch"
+        assert torch.equal(layer.qweight, layer.scheme.quantize(b["weight"], b["scale"], b["zero_point"])), \
+            "the frozen codes are not the Block-AP result"
 
     before = _snapshot(model)
     _train(model)
