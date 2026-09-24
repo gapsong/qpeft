@@ -68,3 +68,16 @@ def test_unimplemented_backend_refuses():
     """Refuse rather than approximate: an unbuilt backend must not silently fall back."""
     with pytest.raises((NotImplementedError, UnsupportedSchemeError)):
         build_scheme(EfficientQATConfig(bits=4, group_size=64, backend="mlx"))
+
+
+def test_frozen_codes_merge_is_exact_after_scale_moves():
+    """The gate on the frozen-codes training path: dequant(codes, s, z) == merge,
+    also after the scale has left its RTN init."""
+    torch.manual_seed(0)
+    scheme = build_scheme(EfficientQATConfig(bits=4, group_size=32, phase="e2e_qp"))
+    w = torch.randn(64, 128) * 0.02
+    s, z = scheme.init_qparams(w, 32)
+    codes = scheme.quantize(w, s, z)
+    s = s * (1 + 0.1 * torch.randn_like(s))    # a trained scale, codes unchanged
+    err = check_merge_equivalence(scheme, w, s, z, adapter=None, x=torch.randn(8, 128), codes=codes)
+    assert err == 0.0

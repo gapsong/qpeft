@@ -23,7 +23,7 @@
 </p>
 
 `qpeft` trains over a quantized substrate.
-Unlike `peft`, its `merge_and_unload()` returns an *integer* model instead of dequantizing back to fp16.
+Unlike `peft`, its `merge_and_unload()` does not dequantize back to fp16: it returns the integer codes plus a per-group scale and zero-point, and an adapter folds into those, never into a float weight.
 It leans on torchao for low-level primitives (affine quant, packed dtypes, kernels) and owns the one seam neither `peft` nor `unsloth` owns: **a QAT-trained adapter/parameter set that folds into the quantized weights and stays quantized, with a correctness guarantee.**
 
 ---
@@ -61,7 +61,7 @@ Two ideas carry everything.
 
 ### How `fake_quant` trains through rounding
 
-Every forward pass re-quantizes from a float master weight that is never overwritten, so rounding errors do not accumulate:
+When the weight is trainable 🔥 (EfficientQAT Block-AP), every forward pass re-quantizes from a float master weight that is never overwritten, so rounding errors do not accumulate:
 
 ```
 x     = w / s + z                       # w: the float weight being trained
@@ -83,15 +83,37 @@ Inside the clamp range, the resulting gradients are:
 - **s** 🔥 gets `round(x) - x`, the rounding error itself, so the scale learns to place the grid where rounding costs least (the LSQ idea).
 - **z** 🔥 gets `0`, because `+z` and `-z` cancel; only clamped elements send it a gradient (`-s`), so the zero-point learns where the grid's edges sit.
 
-With a frozen ❄️ base, as in QA-LoRA, the codes never change: the adapter runs as a separate branch on group-pooled inputs, so its effect is constant within a group, which is exactly a shift of the zero-point.
+When the weight is frozen ❄️ (EfficientQAT E2E-QP, PEQA, QA-LoRA), the codes are quantized **once** when the layer is built and never re-rounded (`QuantLinear.frozen_codes`).
+Training then moves only the grid, `w_hat = (q - z) * s` with `q` fixed, so the scale gets the gradient `q - z`.
+Re-rounding `w / s + z` every step would let a scale-only phase silently re-assign most of the codes.
+
+In QA-LoRA the adapter runs as a separate branch on group-pooled inputs, so its effect is constant within a group, which is exactly a shift of the zero-point.
 That is why the merge is `z' = z - delta / s`, with codes and scale untouched.
+
+### What the merged artifact is
+
+`merge_and_unload()` leaves, per `QuantLinear`:
+
+- `qweight`: the integer codes (`int32`, not bit-packed yet),
+- `scale` and `zero_point`: per-group floats in the base model's dtype.
+
+After a QA-LoRA fold, `z'` is in general **not an integer** any more.
+The dequantization is still affine per group, `w = s * q + beta` with `beta = -z' * s`, so the artifact maps without loss onto formats that store a float offset per group, and not onto formats with an integer zero-point:
+
+| Maps exactly (float offset per group) | Would need rounding `z'` (integer zero-point) |
+|---|---|
+| MLX affine quantization (`scales` + `biases`) | GPTQ (`qzeros`) |
+| GGUF `Q4_1` (`d` and `m` in fp16) | AWQ (`qzeros`) |
+| torchao int4 tinygemm layout (float zero-point domain) | torchao's integer zero-point domain |
+
+Rounding `z'` would break `fake_quant == merge`, so a future export into the right column has to refuse rather than approximate (qpeft has no export layer yet).
 
 ## What it does beyond peft
 
 - **Train quantization parameters.**
   `peft` cannot even express "train the quant scale"; here it is `trainable_params=(SCALE,)`.
-- **Merge stays int.**
-  `QuantModel.merge_and_unload()` returns a quantized model, not fp16, which is the deliberate opposite of `peft`.
+- **Merge stays quantized.**
+  `QuantModel.merge_and_unload()` keeps the integer codes and folds the adapter into the per-group quantization parameters instead of dequantizing to fp16, the deliberate opposite of `peft`.
 - **The method zoo is just configs.**
   EfficientQAT, QA-LoRA, PEQA, L4Q, LoftQ-init and so on are each a point on the axes.
   A new paper is a config plus at most one operation, not a new integration.
@@ -195,7 +217,7 @@ for cfg in efficient_qat_schedule(bits=2, group_size=64):
 # QA-LoRA: one config; the adapter folds into the zero-points on merge.
 model = get_quant_model(base, QALoraConfig(bits=4, group_size=32, r=64))
 # ... train ...
-quantized = model.merge_and_unload()          # stays integer
+quantized = model.merge_and_unload()          # int codes + per-group scale / zero-point
 
 # Same contract on the torchao backend:
 model = get_quant_model(base, QALoraConfig(bits=4, group_size=64, r=16, backend="torchao"))
