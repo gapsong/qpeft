@@ -252,7 +252,7 @@ qpeft/
   block_ap.py          # run_block_ap: EfficientQAT phase 1
   trainer.py           # QATTrainer, QATTrainingArguments                     (needs .[train])
   tuners/
-    tuners_utils.py    # BaseQuantTuner, AdapterLayer, QuantLinear            (~ BaseTuner / lora.Linear)
+    tuners_utils.py    # BaseQuantTuner, QuantLinear                          (~ BaseTuner / lora.Linear)
     efficient_qat/{config,model,layer}.py
     qa_lora/{config,model,layer,torchao}.py
 examples/              # quickstart, train_efficient_qat, train_qa_lora, hf_injection, qat_trainer
