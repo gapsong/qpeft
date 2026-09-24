@@ -298,3 +298,9 @@ def test_star_import_works_without_transformers():
     code = "import sys; sys.modules['transformers'] = None; from qpeft import *; print('ok')"
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert r.returncode == 0 and r.stdout.strip() == "ok", r.stderr
+
+
+def test_refuses_push_to_hub_argument(tmp_path):
+    """Trainer.__init__ would create a Hub repo that save_model() never fills."""
+    with pytest.raises(ValueError, match="push_to_hub"):
+        _trainer(_llama(), tmp_path, quant_config=_cfg(), push_to_hub=True, hub_model_id="x/y")
