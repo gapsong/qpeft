@@ -86,15 +86,20 @@ def test_bias_none_when_base_has_no_bias():
 
 
 def test_fp16_base_survives_injection_and_forward():
-    """A half-precision base (typical HF model) injects and runs without a dtype crash."""
+    """A half-precision base (typical HF model) injects and runs without a dtype crash.
+    scale / zero_point are fp32 masters while training (a half-precision optimizer
+    step would not move them); the forward and the merged artifact stay fp16."""
     torch.manual_seed(0)
     base = nn.Linear(IN, OUT, bias=True).half()
     model = get_quant_model(nn.Sequential(base),
                             EfficientQATConfig(bits=4, group_size=64, phase="block_ap"))
     q = next(m for m in model.modules() if isinstance(m, QuantLinear))
-    assert q.scale.dtype == torch.float16 and q.zero_point.dtype == torch.float16
+    assert q.compute_dtype == torch.float16 and q.weight.dtype == torch.float16
+    assert q.scale.dtype == torch.float32 and q.zero_point.dtype == torch.float32
     y = model(torch.randn(2, IN, dtype=torch.float16))
     assert y.dtype == torch.float16 and torch.isfinite(y).all()
+    model.merge_and_unload()
+    assert q.scale.dtype == torch.float16 and q.zero_point.dtype == torch.float16
 
 
 def test_non_rtn_init_refuses_rather_than_approximates():
@@ -121,7 +126,7 @@ def test_scale_only_training_keeps_codes_frozen(backend):
     torch.manual_seed(0)
     model = _model(EfficientQATConfig(bits=4, group_size=32, phase="e2e_qp", backend=backend))
     q = next(m for m in model.modules() if isinstance(m, QuantLinear))
-    codes0, s0 = q.frozen_codes.clone(), q.scale.detach().clone()
+    codes0, s0 = q.codes, q.scale.detach().clone()
 
     opt = torch.optim.Adam((p for p in model.parameters() if p.requires_grad), lr=1e-2)
     x, y = torch.randn(64, IN), torch.randn(64, OUT)
@@ -131,11 +136,11 @@ def test_scale_only_training_keeps_codes_frozen(backend):
         opt.step()
 
     assert not torch.equal(q.scale.detach(), s0), "the scale did not train"
-    assert torch.equal(q.frozen_codes, codes0), "a scale-only phase re-assigned the codes"
+    assert torch.equal(q.codes, codes0), "a scale-only phase re-assigned the codes"
     with torch.no_grad():
         before = model(x)
     merged = model.merge_and_unload()
-    assert torch.equal(q.qweight, codes0)
+    assert torch.equal(q.codes, codes0)
     with torch.no_grad():
         assert torch.allclose(before, merged(x), atol=1e-5)
 
@@ -144,4 +149,4 @@ def test_trainable_weight_has_no_frozen_codes():
     """Block-AP trains the weight, so its codes are re-rounded every step (STE)."""
     model = _model(EfficientQATConfig(bits=3, group_size=64, phase="block_ap"))
     q = next(m for m in model.modules() if isinstance(m, QuantLinear))
-    assert q.frozen_codes is None
+    assert not q.codes_frozen and q.weight is not None

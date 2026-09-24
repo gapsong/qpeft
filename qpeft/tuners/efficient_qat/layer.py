@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from torch import nn
 
-from ...schemes import build_scheme
+from ...quant_schemes import build_scheme
 from ..tuners_utils import QuantLinear
 
 
