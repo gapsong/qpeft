@@ -59,6 +59,33 @@ Two ideas carry everything.
    A fake-quant that does not match the fuse is worse than none.
    `check_merge_equivalence` turns that into a testable invariant, and it is the spine of the library.
 
+### How `fake_quant` trains through rounding
+
+Every forward pass re-quantizes from a float master weight that is never overwritten, so rounding errors do not accumulate:
+
+```
+x     = w / s + z                       # w: the float weight being trained
+q     = clamp(round(x), 0, 2**bits - 1) # integer code, recomputed every step
+w_hat = (q - z) * s                     # back to float, but exactly on the grid
+```
+
+The network therefore trains on exactly the weights it will have after export.
+`round()` has zero gradient almost everywhere, so a straight-through estimator lets gradients pass through it as if it were the identity:
+
+```python
+q = x + (x.round() - x).detach()        # forward: round(x); backward: identity
+```
+
+Small updates accumulate in `w` until `w / s + z` crosses a rounding boundary and the code jumps to the next level.
+Inside the clamp range, the resulting gradients are:
+
+- **w** 🔥 gets `1` (and `0` where the code is clamped).
+- **s** 🔥 gets `round(x) - x`, the rounding error itself, so the scale learns to place the grid where rounding costs least (the LSQ idea).
+- **z** 🔥 gets `0`, because `+z` and `-z` cancel; only clamped elements send it a gradient (`-s`), so the zero-point learns where the grid's edges sit.
+
+With a frozen ❄️ base, as in QA-LoRA, the codes never change: the adapter runs as a separate branch on group-pooled inputs, so its effect is constant within a group, which is exactly a shift of the zero-point.
+That is why the merge is `z' = z - delta / s`, with codes and scale untouched.
+
 ## What it does beyond peft
 
 - **Train quantization parameters.**
