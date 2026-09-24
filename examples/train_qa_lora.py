@@ -11,7 +11,7 @@ quantized -- check_merge_equivalence proves the fold is exact.
 import torch
 import torch.nn as nn
 
-from qpeft import QALoraConfig, check_merge_equivalence, get_quant_model
+from qpeft import QALoraConfig, get_quant_model, verify_quant_model
 from qpeft.tuners.qa_lora.layer import ZeroPointFoldLoRA
 from qpeft.tuners.tuners_utils import QuantLinear
 
@@ -59,11 +59,8 @@ def main():
     assert last < first * 0.8, "adapter training did not reduce the loss"
 
     # Spine test: the adapter folds into the zero-points exactly.
-    for name, m in model.named_modules():
-        if isinstance(m, QuantLinear):
-            err = check_merge_equivalence(
-                m.scheme, m.weight, m.scale, m.zero_point, m.adapter, torch.randn(8, in_f))
-            print(f"    check_merge_equivalence[{name or 'root'}] OK  max|delta|={err:.2e}")
+    for name, err in verify_quant_model(model).items():
+        print(f"    merge equivalence[{name or 'root'}] OK  max|delta|={err:.2e}")
 
     with torch.no_grad():
         before = model(x)

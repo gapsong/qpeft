@@ -14,11 +14,20 @@ This module is where the central lesson lives, encoded rather than documented:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
 
-import torch
+from ..config import QuantTuningConfig, TrainableParams
 
-from .config import QuantTuningConfig, TrainableParams
+
+# Bounds on the effective scale, as in the official EfficientQAT quantizer
+# (`clamp_ste(self.scale, 1e-4, 1e4)`). A trainable scale can otherwise step to
+# zero or below, where (code - z) * s is no longer a quantization grid.
+SCALE_MIN, SCALE_MAX = 1e-4, 1e4
+
+
+def _ste(value, x):
+    """Straight-through estimator: forward is EXACTLY `value`, gradient is that
+    of `x`. (`x + (value - x).detach()` is not exact in floating point.)"""
+    return value + (x - x.detach())
 
 
 class UnsupportedSchemeError(RuntimeError):
@@ -99,104 +108,28 @@ class _IntUniformScheme(QuantScheme):
     def qmax(self) -> int:
         return (1 << self.bits) - 1
 
+    @staticmethod
+    def clamp_scale(s):
+        """The effective scale: s clamped to [SCALE_MIN, SCALE_MAX] with a
+        straight-through gradient. Every primitive and the merge go through it,
+        so training and the exported artifact use the same scale."""
+        return _ste(s.clamp(SCALE_MIN, SCALE_MAX), s)
+
+    def round_zero_point(self, z):
+        """The effective zero-point: rounded to an integer in [qmin, qmax], with a
+        straight-through gradient (official EfficientQAT:
+        clamp_ste(round_ste(z), qmin, qmax)). int_uniform has an INTEGER
+        zero-point domain, so the artifact stays GPTQ-style packable; only an
+        adapter folded in by `merge` makes the stored zero-point fractional."""
+        return _ste(z.round().clamp(self.qmin, self.qmax), z)
+
     def merge(self, wq, s, z, adapter=None):
         """int in, int out. No adapter -> identity. A group-structured adapter
         (QA-LoRA) folds EXACTLY into the zero-points; codes and scale are untouched,
         so the merged artifact stays quantized. Defined once for every backend."""
+        s = self.clamp_scale(s)                         # the scale training actually used
+        z = self.round_zero_point(z)                    # the zero-point training actually used
         if adapter is None:
             return wq, s, z
-        delta = adapter.folded_delta()                  # (out, n_groups) per-group weight shift
+        delta = adapter.folded_delta().to(s.dtype)      # (out, n_groups) per-group weight shift
         return wq, s, z - delta / s                     # (code - z')*s == (code - z)*s + delta
-
-
-class ReferenceIntUniformScheme(_IntUniformScheme):
-    """Dependency-free reference implementation of the int_uniform contract.
-
-    Weight-only, group-wise *asymmetric* affine quantization with a straight-
-    through estimator for training. The torchao/MLX backends are separate
-    implementations of the SAME contract, measured at the SAME gate.
-
-        code  = clamp(round(w / s + z), 0, 2**bits - 1)     # quantize (int artifact)
-        w_hat = (code - z) * s                              # dequant
-        fake_quant = w_hat, with STE gradient to {w, s, z}  # training surrogate"""
-
-    @staticmethod
-    def _expand(p, in_features):
-        # (out, n_groups) -> (out, in_features): one scale/zero-point per group
-        return p.repeat_interleave(in_features // p.shape[-1], dim=-1)
-
-    def init_qparams(self, weight, group_size: int):
-        """RTN init: per-group scale and zero-point from the weight's min/max."""
-        out, in_f = weight.shape
-        w = weight.detach().reshape(out, in_f // group_size, group_size)
-        wmin, wmax = w.min(dim=-1).values, w.max(dim=-1).values
-        s = (wmax - wmin).clamp_min(1e-8) / self.qmax
-        z = -wmin / s                                   # so (0 - z) * s == wmin
-        return s, z
-
-    def _codes_ste(self, w, s, z):
-        se, ze = self._expand(s, w.shape[-1]), self._expand(z, w.shape[-1])
-        q = w / se + ze
-        q = q + (q.round() - q).detach()                # straight-through round
-        return torch.clamp(q, self.qmin, self.qmax), se, ze
-
-    def fake_quant(self, w, s, z):                      # STE surrogate used in TRAINING
-        code, se, ze = self._codes_ste(w, s, z)
-        return (code - ze) * se
-
-    def quantize(self, w, s, z):                        # -> integer artifact (the codes)
-        with torch.no_grad():
-            code, _, _ = self._codes_ste(w, s, z)
-        return code.round().to(torch.int32)
-
-    def dequant(self, wq, s, z):                        # w_hat = (code - z) * s, grouped
-        se, ze = self._expand(s, wq.shape[-1]), self._expand(z, wq.shape[-1])
-        return (wq.to(se.dtype) - ze) * se
-
-
-_SCHEMES: dict[str, Callable[[FakeQuantizeConfig, str], QuantScheme]] = {}
-
-
-def register_scheme(name: str):             # ~ peft's peft_type -> tuner registry
-    def deco(fn):
-        _SCHEMES[name] = fn
-        return fn
-    return deco
-
-
-def build_scheme(cfg: QuantTuningConfig) -> QuantScheme:
-    fq = FakeQuantizeConfig(dtype=f"int{cfg.bits}", group_size=cfg.group_size)
-    try:
-        factory = _SCHEMES[cfg.qat_scheme]
-    except KeyError:
-        raise UnsupportedSchemeError(              # refuse loudly, don't KeyError
-            f"unknown qat_scheme {cfg.qat_scheme!r}; registered: {sorted(_SCHEMES)}. "
-            f"Refusing rather than approximating.") from None
-    scheme = factory(fq, cfg.backend)
-    scheme.assert_supported(cfg)                   # refuse rather than approximate
-    return scheme
-
-
-# Backend names a PROVIDER (who implements the primitives), never a device:
-#   "auto" | "torch"  -> pure-torch reference, always available
-#   "torchao"         -> torchao's stable affine primitives (optional dependency)
-#   "mlx"             -> planned, refused until built
-# The device is orthogonal and follows the model's tensors.
-@register_scheme("int_uniform")
-def _int_uniform(fq: FakeQuantizeConfig, backend: str) -> QuantScheme:
-    if backend in ("auto", "torch"):
-        return ReferenceIntUniformScheme(fq, backend="torch", supports_adapter=True)
-    if backend == "torchao":
-        try:
-            from .schemes_torchao import TorchaoIntUniformScheme
-        except ImportError as e:                    # torchao is an optional dependency
-            raise NotImplementedError(
-                "backend 'torchao' needs torchao: pip install 'qpeft[torchao]'.") from e
-        return TorchaoIntUniformScheme(fq, backend="torchao", supports_adapter=True)
-    if backend == "mlx":                            # known provider, not built yet
-        raise NotImplementedError(
-            "the 'mlx' backend is not built yet; it implements the same "
-            "(fake_quant, merge) contract and is measured at the same gate.")
-    raise UnsupportedSchemeError(                   # typo / unknown provider: refuse loudly
-        f"unknown backend {backend!r}; choose from 'auto', 'torch', 'torchao', 'mlx'. "
-        f"Refusing rather than approximating.")

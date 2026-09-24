@@ -12,7 +12,7 @@ import torch.nn as nn
 from qpeft import (
     EfficientQATConfig, QALoraConfig, check_merge_equivalence, get_quant_model,
 )
-from qpeft.schemes import UnsupportedSchemeError, build_scheme
+from qpeft.quant_schemes import UnsupportedSchemeError, build_scheme
 from qpeft.tuners.qa_lora.layer import ZeroPointFoldLoRA
 from qpeft.tuners.tuners_utils import QuantLinear
 

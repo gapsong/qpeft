@@ -22,8 +22,8 @@ from torchao.quantization.quant_primitives import (
     quantize_affine,
 )
 
-from .config import QuantTuningConfig, TrainableParams
-from .schemes import _IntUniformScheme
+from ..config import QuantTuningConfig, TrainableParams
+from .base import _IntUniformScheme
 
 _QDTYPE = torch.int32
 
@@ -49,19 +49,22 @@ class TorchaoIntUniformScheme(_IntUniformScheme):
     def init_qparams(self, weight, group_size: int):
         scale, zp = choose_qparams_affine(
             weight, MappingType.ASYMMETRIC, (1, group_size), _QDTYPE, self.qmin, self.qmax)
-        return scale, zp.to(weight.dtype)          # store zp as an (integer-valued) float param
+        # zp is stored as an integer-valued float param
+        return self.clamp_scale(scale), self.round_zero_point(zp.to(weight.dtype))
 
     def fake_quant(self, w, s, z):                 # STE surrogate used in TRAINING
         return _fake_quantize_affine(
-            w, self._block(), s, z.round().to(_QDTYPE), _QDTYPE, self.qmin, self.qmax)
+            w, self._block(), self.clamp_scale(s), self.round_zero_point(z).to(_QDTYPE), _QDTYPE,
+            self.qmin, self.qmax)
 
     def quantize(self, w, s, z):                   # -> integer artifact (the codes)
         with torch.no_grad():
             return quantize_affine(
-                w, self._block(), s, z.round().to(_QDTYPE), _QDTYPE, self.qmin, self.qmax)
+                w, self._block(), self.clamp_scale(s), self.round_zero_point(z).to(_QDTYPE), _QDTYPE,
+                self.qmin, self.qmax)
 
     def dequant(self, wq, s, z):                   # (q - z) * s, z may be float after a fold
         return dequantize_affine(
-            wq, self._block(), s, z, _QDTYPE, self.qmin, self.qmax, output_dtype=s.dtype)
+            wq, self._block(), self.clamp_scale(s), z, _QDTYPE, self.qmin, self.qmax, output_dtype=s.dtype)
 
     # merge (adapter fold) is inherited from _IntUniformScheme -- defined once.

@@ -38,7 +38,7 @@ So it is re-fought per backend, and the general case (an adapter that folds into
 `fake_quant()` and `merge()` are methods on the same `QuantScheme`.
 You cannot define the training quantization without placing the matching export fuse right next to it.
 That prevents drift structurally instead of documenting against it.
--> `qpeft/schemes.py::QuantScheme`
+-> `qpeft/quant_schemes/base.py::QuantScheme`
 
 ### 2. Equivalence is a test gate
 The insight "a mismatch is worse than none" becomes a testable invariant: the training path (`fake_quant`) must numerically equal the merged path (`merge` -> `dequant`).

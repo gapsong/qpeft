@@ -86,15 +86,20 @@ def test_bias_none_when_base_has_no_bias():
 
 
 def test_fp16_base_survives_injection_and_forward():
-    """A half-precision base (typical HF model) injects and runs without a dtype crash."""
+    """A half-precision base (typical HF model) injects and runs without a dtype crash.
+    scale / zero_point are fp32 masters while training (a half-precision optimizer
+    step would not move them); the forward and the merged artifact stay fp16."""
     torch.manual_seed(0)
     base = nn.Linear(IN, OUT, bias=True).half()
     model = get_quant_model(nn.Sequential(base),
                             EfficientQATConfig(bits=4, group_size=64, phase="block_ap"))
     q = next(m for m in model.modules() if isinstance(m, QuantLinear))
-    assert q.scale.dtype == torch.float16 and q.zero_point.dtype == torch.float16
+    assert q.compute_dtype == torch.float16 and q.weight.dtype == torch.float16
+    assert q.scale.dtype == torch.float32 and q.zero_point.dtype == torch.float32
     y = model(torch.randn(2, IN, dtype=torch.float16))
     assert y.dtype == torch.float16 and torch.isfinite(y).all()
+    model.merge_and_unload()
+    assert q.scale.dtype == torch.float16 and q.zero_point.dtype == torch.float16
 
 
 def test_non_rtn_init_refuses_rather_than_approximates():

@@ -5,7 +5,7 @@ import pytest
 import torch
 
 from qpeft import EfficientQATConfig
-from qpeft.schemes import build_scheme
+from qpeft.quant_schemes import build_scheme
 
 
 @pytest.mark.parametrize("bits", [2, 4, 8])
