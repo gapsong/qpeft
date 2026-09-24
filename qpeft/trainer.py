@@ -146,8 +146,12 @@ class QATTrainer(Trainer):
         if args.e2e_lr is None:
             args.e2e_lr = 2e-5 if bits == 2 else 1e-5
         super().__init__(model=model, args=args, **kwargs)
-        # QuantModel.forward is (*args, **kwargs): inspect the wrapped HF model instead.
         base = model.base
+        # Trainer sets use_cache on model.config, which is the qpeft config here.
+        vars(model.config).pop("use_cache", None)
+        if getattr(base, "config", None) is not None:
+            base.config.use_cache = self.args.use_cache
+        # QuantModel.forward is (*args, **kwargs): inspect the wrapped HF model instead.
         self.model_accepts_loss_kwargs = getattr(
             base, "accepts_loss_kwargs",
             any(p.kind == inspect.Parameter.VAR_KEYWORD
@@ -228,11 +232,19 @@ class QATTrainer(Trainer):
         return result
 
     # -- saving --------------------------------------------------------------------
+    _SAVE_MSG = ("only the merged int artifact is saved: train, then call trainer.save_model(output_dir) "
+                 "and upload that directory yourself.")
+
     def save_model(self, output_dir=None, _internal_call=False):
         """Merge (irreversible) and write the int artifact: qpeft_config.json +
         qpeft_model.pt. Load with QuantModel.from_pretrained(base_model, output_dir)."""
         if _internal_call:
-            raise RuntimeError("mid-training checkpoints are not supported; keep save_strategy='no'.")
+            raise RuntimeError("Trainer-internal saves (mid-training checkpoints, push_to_hub, "
+                               f"hyperparameter search) are not supported; {self._SAVE_MSG}")
         output_dir = output_dir or self.args.output_dir
         self.model.merge_and_unload()
-        self.model.save_pretrained(output_dir)
+        if self.args.should_save:
+            self.model.save_pretrained(output_dir)
+
+    def push_to_hub(self, *args, **kwargs):
+        raise RuntimeError(f"push_to_hub is not supported; {self._SAVE_MSG}")

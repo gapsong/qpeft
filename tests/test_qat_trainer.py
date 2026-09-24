@@ -242,3 +242,59 @@ def test_block_ap_batches_hold_exactly_block_ap_train_size_rows(tmp_path):
     assert sum(b["input_ids"].shape[0] for b in batches) == 5
     assert all(b["input_ids"].shape[0] <= 2 for b in batches)
     assert all("labels" not in b for b in batches)
+
+
+# --- Trainer integration: checkpointing, KV cache, saving, imports ---------------------
+
+def test_gradient_checkpointing_trains_both_phases(tmp_path):
+    trainer = _trainer(_llama(), tmp_path, quant_config=_cfg(), gradient_checkpointing=True)
+    trainer.train()
+    assert trainer.model.base.is_gradient_checkpointing
+
+
+def test_gradient_checkpointing_is_refused_for_a_model_without_it():
+    class Plain(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.q_proj = torch.nn.Linear(128, 128)
+
+        def forward(self, x):
+            return self.q_proj(x)
+
+    qmodel = get_quant_model(Plain(), _cfg(target_modules=["q_proj"]))
+    with pytest.raises(ValueError, match="gradient checkpointing"):
+        qmodel.gradient_checkpointing_enable()
+
+
+def test_use_cache_goes_to_the_hf_model_not_the_qpeft_config(tmp_path):
+    model = _llama()
+    assert model.config.use_cache                                # HF default: KV cache on
+    trainer = _trainer(model, tmp_path, quant_config=_cfg())     # TrainingArguments.use_cache = False
+    assert trainer.model.base.config.use_cache is False
+    assert "use_cache" not in vars(trainer.model.config)
+
+
+def test_push_to_hub_is_refused_with_a_pointer_to_save_model(tmp_path):
+    trainer = _trainer(_llama(), tmp_path, quant_config=_cfg())
+    with pytest.raises(RuntimeError, match="save_model"):
+        trainer.push_to_hub()
+    with pytest.raises(RuntimeError, match="save_model"):
+        trainer.save_model(_internal_call=True)                   # e.g. hyperparameter search
+    assert not trainer.model.is_merged
+
+
+def test_save_model_merges_everywhere_but_writes_only_on_the_main_process(tmp_path, monkeypatch):
+    trainer = _trainer(_llama(), tmp_path, quant_config=_cfg())
+    monkeypatch.setattr(type(trainer.args), "should_save", property(lambda self: False))
+    out = tmp_path / "rank1"
+    trainer.save_model(str(out))
+    assert trainer.model.is_merged
+    assert not out.exists() or not any(out.iterdir())
+
+
+def test_star_import_works_without_transformers():
+    import subprocess
+    import sys
+    code = "import sys; sys.modules['transformers'] = None; from qpeft import *; print('ok')"
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert r.returncode == 0 and r.stdout.strip() == "ok", r.stderr

@@ -17,7 +17,6 @@ __all__ = [
     "FakeQuantizeConfig", "QuantScheme", "UnsupportedSchemeError", "build_scheme", "register_scheme",
     "get_quant_model", "QuantModel", "check_merge_equivalence",
     "check_layer_merge_equivalence", "verify_quant_model", "param_groups", "run_block_ap",
-    "QATTrainer", "QATTrainingArguments",
     "EfficientQATConfig", "EfficientQATModel", "efficient_qat_schedule",
     "QALoraConfig", "QALoraModel", "ZeroPointFoldLoRA",
 ]
