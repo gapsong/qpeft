@@ -1,4 +1,4 @@
-"""~ peft/tuners/lora/config.py, but for a QAT method with no adapter."""
+"""EfficientQAT config: which parameters train in each of the two phases."""
 from __future__ import annotations
 
 from dataclasses import dataclass

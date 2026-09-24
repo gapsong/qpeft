@@ -1,4 +1,4 @@
-"""~ peft/tuners/lora/model.py: LoraModel."""
+"""The tuner for this method (peft: LoraModel)."""
 from __future__ import annotations
 
 from ..tuners_utils import BaseQuantTuner

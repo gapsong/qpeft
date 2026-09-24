@@ -1,4 +1,4 @@
-"""~ peft/tuners/lora/config.py: LoraConfig field names, adapter folds into zero-points."""
+"""QA-LoRA config: peft's LoraConfig field names; only the adapter trains."""
 from __future__ import annotations
 
 from dataclasses import dataclass

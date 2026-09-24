@@ -1,4 +1,4 @@
-"""Core config primitives. ~ peft/utils/peft_types.py + peft/config.py"""
+"""The config every method extends (peft: peft/config.py + utils/peft_types.py)."""
 from __future__ import annotations
 
 import dataclasses
@@ -37,16 +37,14 @@ class QuantTuningConfig:
     trainable_params: tuple[TrainableParams, ...] = (TrainableParams.SCALE,)
 
     def to_dict(self) -> dict:
-        def plain(v):
-            if isinstance(v, Enum):
-                return v.value
-            if isinstance(v, (tuple, list)):
-                return [plain(x) for x in v]
-            return v
-        return {f.name: plain(getattr(self, f.name)) for f in dataclasses.fields(self)}
+        """JSON-ready: enums as their values, tuples as lists."""
+        return {f.name: _json_value(getattr(self, f.name)) for f in dataclasses.fields(self)}
 
     @classmethod
     def from_dict(cls, d: dict) -> "QuantTuningConfig":
+        """Build the right subclass (from quant_tuning_type). Unknown types or fields are refused,
+        e.g. a config written by a newer qpeft. trainable_params is not read: each method
+        derives it from its own fields."""
         from .mapping import QUANT_TUNING_TYPE_TO_CONFIG_MAPPING
         from .quant_schemes import UnsupportedSchemeError
         d = dict(d)
@@ -76,3 +74,11 @@ class QuantTuningConfig:
     def from_pretrained(cls, save_directory) -> "QuantTuningConfig":
         with open(os.path.join(save_directory, CONFIG_NAME)) as f:
             return cls.from_dict(json.load(f))
+
+
+def _json_value(v):
+    if isinstance(v, Enum):
+        return v.value
+    if isinstance(v, (tuple, list)):
+        return [_json_value(x) for x in v]
+    return v

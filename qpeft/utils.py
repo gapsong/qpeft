@@ -1,75 +1,72 @@
-"""Correctness utilities. The merge-equivalence check is the spine of the whole lib."""
+"""Merge checks: the merged (integer) model must compute what the trained model computes.
+This is the property the whole library is built around."""
 from __future__ import annotations
+
+import copy
 
 import torch
 import torch.nn.functional as F
 
 from .quant_schemes import QuantScheme
+from .tuners.tuners_utils import QuantLinear
 
 
 @torch.no_grad()
 def check_merge_equivalence(scheme: QuantScheme, w, s, z, adapter, x, atol: float = 1e-4,
                             codes=None):
-    """The spine: the training fake_quant path must equal the merged (still-quantized) path.
+    """Scheme-level check: fake_quant (+ adapter) must equal dequant(merge(...)) on input x.
+    Run it before trusting a scheme.
 
-    If this fails, the fake_quant does not match the fuse -- and a fake-quant that
-    does not match fuse is worse than none. Run this per layer before trusting a scheme.
-
-    `codes`: a layer's frozen integer codes (trainable set without WEIGHT). The
-    training path is then dequant(codes, s, z), and the merge starts from them."""
+    `codes`: frozen integer codes (when the weight does not train). The training path is
+    then dequant(codes, s, z), and the merge starts from these codes."""
     if codes is None:
-        train = F.linear(x, scheme.fake_quant(w, s, z))
+        train_out = F.linear(x, scheme.fake_quant(w, s, z))
         codes = scheme.quantize(w, s, z)
     else:
-        train = F.linear(x, scheme.dequant(codes, s, z))
+        train_out = F.linear(x, scheme.dequant(codes, s, z))
     if adapter is not None:
-        train = train + adapter(x)
-    wq, s2, z2 = scheme.merge(codes, s, z, adapter)
-    infer = F.linear(x, scheme.dequant(wq, s2, z2))
-    max_err = (train - infer).abs().max().item()
-    assert torch.allclose(train, infer, atol=atol), f"merge != fake_quant, max|delta|={max_err}"
+        train_out = train_out + adapter(x)
+    merged_codes, merged_s, merged_z = scheme.merge(codes, s, z, adapter)
+    merged_out = F.linear(x, scheme.dequant(merged_codes, merged_s, merged_z))
+    max_err = (train_out - merged_out).abs().max().item()
+    assert torch.allclose(train_out, merged_out, atol=atol), f"merge != fake_quant, max|delta|={max_err}"
     return max_err
-
-
-def _merge_tolerance(dtype: torch.dtype, ref: torch.Tensor) -> float:
-    """fp32: the fold is exact up to float reassociation. Half precision: the
-    fold z - delta/s itself is computed in half, so allow a relative 1e-2."""
-    if dtype == torch.float32 or dtype == torch.float64:
-        return 1e-4
-    return 1e-2 * max(ref.abs().max().item(), 1.0)
 
 
 @torch.no_grad()
 def check_layer_merge_equivalence(layer, x=None) -> float:
-    """Layer-level spine check that also covers FROZEN codes: the layer's own
-    training forward must equal the forward of a merged copy of it.
-
-    Unlike check_merge_equivalence (which re-derives codes from w, s, z), this
-    uses whatever the layer really computes with -- including codes frozen at a
-    phase switch while the scale kept training."""
-    import copy
+    """Layer-level check: the layer's own forward must equal the forward of a merged copy.
+    Unlike check_merge_equivalence, this uses what the layer really computes with,
+    including codes frozen at a phase switch while the scale kept training."""
     if layer.merged:
         return 0.0
-    in_f = layer.scale.shape[-1] * layer.config.group_size
     if x is None:
-        x = torch.randn(4, in_f, dtype=layer.compute_dtype, device=layer.scale.device)
-    train = layer(x)
+        in_features = layer.scale.shape[-1] * layer.config.group_size
+        x = torch.randn(4, in_features, dtype=layer.compute_dtype, device=layer.scale.device)
+    train_out = layer(x)
     merged = copy.deepcopy(layer)
     merged.merge()
-    infer = merged(x)
-    max_err = (train - infer).abs().max().item()
-    tol = _merge_tolerance(layer.compute_dtype, train)
+    merged_out = merged(x)
+    max_err = (train_out - merged_out).abs().max().item()
+    tol = _merge_tolerance(layer.compute_dtype, train_out)
     assert max_err <= tol, f"merge != training forward, max|delta|={max_err} > {tol}"
     return max_err
 
 
 def verify_quant_model(model) -> dict:
-    """Run check_layer_merge_equivalence on every unmerged QuantLinear.
-    Raises on the first red layer; returns {name: max_err} otherwise."""
-    from .tuners.tuners_utils import QuantLinear
+    """check_layer_merge_equivalence on every unmerged QuantLinear.
+    Raises on the first failing layer; otherwise returns {name: max_err}."""
     base = getattr(model, "base", model)
     results = {name: check_layer_merge_equivalence(m)
                for name, m in base.named_modules() if isinstance(m, QuantLinear)}
     if not results:
         raise ValueError("no QuantLinear found -- nothing to verify")
     return results
+
+
+def _merge_tolerance(dtype: torch.dtype, reference: torch.Tensor) -> float:
+    """fp32: the fold is exact up to float reordering. Half precision: the fold z - delta / s
+    is itself computed in half, so allow a relative 1e-2."""
+    if dtype in (torch.float32, torch.float64):
+        return 1e-4
+    return 1e-2 * max(reference.abs().max().item(), 1.0)
