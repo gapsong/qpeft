@@ -67,7 +67,7 @@ def _snap(qmodel):
         if isinstance(m, QuantLinear):
             out[f"{name}.scale"] = m.scale.detach().clone()
             out[f"{name}.zero_point"] = m.zero_point.detach().clone()
-            out[f"{name}.codes"] = (m.qweight.clone() if m.codes_frozen
+            out[f"{name}.codes"] = (m.codes if m.codes_frozen
                                     else m.scheme.quantize(m.weight, m.scale, m.zero_point))
     return out
 
@@ -156,7 +156,7 @@ def test_runs_both_phases_with_the_right_trainable_sets(tmp_path):
 
     assert _changed_kinds(before, after_block_ap) == {"codes", "scale", "zero_point"}
     # the new grid alone would also change the codes; the weight moved too:
-    assert any(not torch.equal(m.qweight, m.scheme.quantize(w0[id(m)], *grid[id(m)]))
+    assert any(not torch.equal(m.codes, m.scheme.quantize(w0[id(m)], *grid[id(m)]))
                for m in trainer.model.quant_layers())
     assert _changed_kinds(after_block_ap, _snap(trainer.model)) == {"scale"}
 

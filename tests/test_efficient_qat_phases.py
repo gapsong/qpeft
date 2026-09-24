@@ -113,7 +113,7 @@ def test_e2e_qp_codes_are_frozen_when_scale_moves():
     of using the frozen codes."""
     model = get_quant_model(_base(), EfficientQATConfig(bits=4, group_size=64, phase="e2e_qp"))
     layer = _layers(model)[0]
-    codes0 = layer.qweight.clone()
+    codes0 = layer.codes
 
     with torch.no_grad():
         layer.scale.mul_(1.5)
@@ -145,7 +145,7 @@ def test_schedule_switches_trainable_set_and_keeps_phase1_results():
     for layer, b, a in zip(_layers(model), after_block_ap, _snapshot(model)):
         for name in ("scale", "zero_point"):
             assert torch.equal(b[name], a[name]), f"{name} was re-initialized at the phase switch"
-        assert torch.equal(layer.qweight, layer.scheme.quantize(b["weight"], b["scale"], b["zero_point"])), \
+        assert torch.equal(layer.codes, layer.scheme.quantize(b["weight"], b["scale"], b["zero_point"])), \
             "the frozen codes are not the Block-AP result"
 
     before = _snapshot(model)

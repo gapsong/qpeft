@@ -8,6 +8,7 @@ from torch import nn
 import torch.nn.functional as F
 
 from ..config import QuantTuningConfig, TrainableParams
+from ..packing import pack_codes, unpack_codes
 from ..quant_schemes import QuantScheme, UnsupportedSchemeError
 
 
@@ -28,14 +29,22 @@ class QuantLinear(nn.Module, AdapterLayer):  # ~ peft lora.Linear / torchtune QA
     (1e-5 .. 2e-5) is below bf16's resolution and would silently do nothing.
     The forward always computes in the input's dtype on params cast to it, and
     codes and the merged artifact are made in `compute_dtype` -- so a half-
-    precision training forward and its merged artifact see the same numbers."""
+    precision training forward and its merged artifact see the same numbers.
+
+    Frozen and merged codes are stored packed in `qweight` (GPTQ layout, see
+    qpeft/packing.py); scale and zero_point stay separate float tensors, so a
+    zero-point made fractional by an adapter fold is stored exactly."""
 
     def __init__(self, base: nn.Linear, scheme: QuantScheme,
                  config: QuantTuningConfig, adapter: Optional[nn.Module] = None):
         super().__init__()
         if base.in_features % config.group_size != 0:
             raise ValueError(f"in_features {base.in_features} not divisible by group_size {config.group_size}")
+        if (base.in_features * config.bits) % 32 != 0:
+            raise ValueError(f"in_features {base.in_features} x {config.bits} bits does not fill whole "
+                             "int32 words; the packed codes need in_features * bits to be a multiple of 32.")
         self.scheme, self.config, self.adapter = scheme, config, adapter
+        self.in_features, self.out_features = base.in_features, base.out_features
         self.merged = False
         self.codes_frozen = False     # True once the integer codes are fixed (qweight buffer)
         self.quant_enabled = True     # False only inside Block-AP to get the fp reference output
@@ -85,14 +94,14 @@ class QuantLinear(nn.Module, AdapterLayer):  # ~ peft lora.Linear / torchtune QA
         bias = None if self.bias is None else self.bias.to(dt)
         if self.merged:
             # After merge the base is a frozen integer artifact -> only dequant it.
-            return F.linear(x, self.scheme.dequant(self.qweight, s, z), bias)
+            return F.linear(x, self.scheme.dequant(self.codes, s, z), bias)
         if not self.quant_enabled:
             # fp reference path, used only by Block-AP to compute its targets.
             w_hat = self.weight.to(dt)
         elif self.codes_frozen:
             # Fixed integer codes; gradients reach scale / zero_point directly. The
             # zero-point is used rounded, exactly as fake_quant and merge use it.
-            w_hat = self.scheme.dequant(self.qweight, s, self.scheme.round_zero_point(z))
+            w_hat = self.scheme.dequant(self.codes, s, self.scheme.round_zero_point(z))
         else:
             # Training path: the STE fake_quant carries gradients to whichever of
             # {weight, scale, zero_point} are trainable.
@@ -100,18 +109,23 @@ class QuantLinear(nn.Module, AdapterLayer):  # ~ peft lora.Linear / torchtune QA
         y = F.linear(x, w_hat, bias)
         return y + self.adapter(x) if self.adapter is not None else y
 
+    @property
+    def codes(self) -> torch.Tensor:
+        """The frozen / merged integer codes, (out_features, in_features) int32."""
+        return unpack_codes(self.qweight, self.config.bits, self.in_features)
+
     # -- phase handling ------------------------------------------------------
     @torch.no_grad()
     def freeze_codes(self):
         """Fix the integer codes from the current (weight, scale, zero_point).
         Equivalent to the official EfficientQAT hand-over (quant_inplace + pack):
-        from here on the codes are an int32 buffer and never re-rounded, and the
+        from here on the codes are a packed buffer and never re-rounded, and the
         fp weight is dropped."""
         if self.codes_frozen or self.merged:
             return
         cd = self.compute_dtype
-        self.register_buffer("qweight", self.scheme.quantize(
-            self.weight.to(cd), self.scale.to(cd), self.zero_point.to(cd)))
+        self.register_buffer("qweight", pack_codes(self.scheme.quantize(
+            self.weight.to(cd), self.scale.to(cd), self.zero_point.to(cd)), self.config.bits))
         self.weight = None
         self.codes_frozen = True
 
@@ -156,14 +170,14 @@ class QuantLinear(nn.Module, AdapterLayer):  # ~ peft lora.Linear / torchtune QA
             return
         cd = self.compute_dtype       # the artifact is made in the base dtype
         s, z = self.scale.data.to(cd), self.zero_point.data.to(cd)
-        codes = (self.qweight if self.codes_frozen
+        codes = (self.codes if self.codes_frozen
                  else self.scheme.quantize(self.weight.data.to(cd), s, z))
         wq, s, z = self.scheme.merge(codes, s, z, self.adapter)
         # ~ peft safe_merge, but always on: never write a broken artifact. Checked
         # BEFORE anything is mutated, so a refused merge leaves the layer untouched.
         if not (torch.isfinite(s).all() and torch.isfinite(z).all()):
             raise ValueError("NaNs/Infs detected in the merged scale/zero_point; refusing to merge.")
-        self.register_buffer("qweight", wq)                      # int32 codes, the merged artifact
+        self.register_buffer("qweight", pack_codes(wq, self.config.bits))
         with torch.no_grad():
             self.scale = nn.Parameter(s.clone(), requires_grad=False)
             self.zero_point = nn.Parameter(z.clone(), requires_grad=False)
@@ -175,9 +189,9 @@ class QuantLinear(nn.Module, AdapterLayer):  # ~ peft lora.Linear / torchtune QA
     def to_merged_skeleton(self):
         """Turn a freshly injected layer into an empty merged layer of the right
         shape, so a saved merged state_dict can be loaded into it (strict)."""
-        ref = self.weight if self.weight is not None else self.qweight
-        out_f, in_f = ref.shape
-        self.register_buffer("qweight", torch.zeros(out_f, in_f, dtype=torch.int32, device=ref.device))
+        device = self.scale.device
+        self.register_buffer("qweight", torch.zeros(self.in_features * self.config.bits // 32, self.out_features,
+                                                    dtype=torch.int32, device=device))
         self.weight = None
         self.adapter = None
         cd = self.compute_dtype       # a merged artifact stores scale / zero_point in the base dtype

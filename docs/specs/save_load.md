@@ -17,7 +17,7 @@ This is next step (b) from `CLAUDE.md`.
   (i.e. after `merge_and_unload()`) writes:
   - `qpeft_config.json` — the full `QuantTuningConfig` (incl. `quant_tuning_type`,
     `qat_scheme`, `backend`, `bits`, `group_size`, method-specific fields).
-  - the tensors of every `QuantLinear`: `qweight` (int32), `scale`, `zero_point`,
+  - the tensors of every `QuantLinear`: `qweight` (int32, codes packed in the GPTQ layout: shape (in * bits // 32, out)), `scale`, `zero_point`,
     `bias` — plus all non-quantized parameters of the base model.
 - `QuantModel.from_pretrained(base_model, save_directory)` returns a `QuantModel`
   in the merged state. `base_model` supplies the architecture (same pattern as
@@ -42,7 +42,7 @@ is written to disk.
 | Saved config names an unknown `qat_scheme` | `UnsupportedSchemeError` at load |
 | Saved with `backend="torchao"`, torchao not installed | the existing `NotImplementedError` from `build_scheme` |
 | `base_model` has different shapes than the saved one | error (strict load), never a partial load |
-| fp16 base model | `scale` / `zero_point` / `bias` stay fp16, `qweight` stays int32 |
+| fp16 base model | `scale` / `zero_point` / `bias` stay fp16, `qweight` stays packed int32 |
 | `Linear(bias=True)` | bias round-trips unchanged |
 
 ## Out of scope
@@ -63,7 +63,7 @@ If you change one of these, change the matching test in `tests/test_save_load.py
 ## Acceptance criteria
 
 - [x] Output before save == output after load, **bit-exact** (`torch.equal`, not `allclose`)
-- [x] Loaded `qweight` is `int32`, adapter is `None`, layer reports `merged`
+- [x] Loaded `qweight` is packed `int32`, adapter is `None`, layer reports `merged`
 - [x] No float `weight` on any merged `QuantLinear` (in memory and after load)
 - [x] Every edge case above has a test
 - [x] Existing suite stays green; invariants in `CLAUDE.md` untouched

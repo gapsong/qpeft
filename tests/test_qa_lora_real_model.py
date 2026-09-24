@@ -146,7 +146,7 @@ def test_qa_lora_train_then_merge_is_lossless(make_model):
     for name, layer in layers.items():
         assert layer.merged and layer.adapter is None
         assert layer.qweight.dtype == torch.int32
-        assert torch.equal(layer.qweight.to(torch.uint8), oracle[name]), \
+        assert torch.equal(layer.codes.to(torch.uint8), oracle[name]), \
             f"{name}: merge changed the integer codes"
         assert torch.equal(layer.scale, scales_before[name]), \
             f"{name}: merge changed the scale (only zero_point may move)"

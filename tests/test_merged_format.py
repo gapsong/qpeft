@@ -10,7 +10,8 @@ peft (tests/testing_common.py, PeftCommonTester) checks for every method:
 qpeft adds what peft does not have: after the merge the layer IS an integer artifact.
 
 Merged QuantLinear format (the contract these tests pin):
-  qweight     int32, shape (out, in), values in [0, 2**bits - 1]
+  qweight     int32, shape (in * bits // 32, out): the codes packed in the GPTQ layout
+              (unpacked `layer.codes`: shape (out, in), values in [0, 2**bits - 1])
   scale       base dtype, shape (out, in // group_size), finite, > 0
   zero_point  base dtype, shape (out, in // group_size), finite
   bias        unchanged (value and dtype), or None
@@ -63,13 +64,15 @@ def _trained(method, bits=4, gs=32, dtype=torch.float32):
 
 
 def _assert_merged_format(layer, bits, gs, dtype, bias_before):
-    out_f, in_f = layer.qweight.shape
+    out_f, in_f = layer.out_features, layer.in_features
     assert layer.merged
     assert layer.weight is None, "fp master weight survived the merge"
     assert layer.adapter is None, "adapter survived the merge"
 
-    assert layer.qweight.dtype == torch.int32
-    assert int(layer.qweight.min()) >= 0 and int(layer.qweight.max()) <= 2 ** bits - 1
+    assert layer.qweight.dtype == torch.int32 and layer.qweight.shape == (in_f * bits // 32, out_f)
+    codes = layer.codes
+    assert codes.shape == (out_f, in_f)
+    assert int(codes.min()) >= 0 and int(codes.max()) <= 2 ** bits - 1
 
     for name in ("scale", "zero_point"):
         t = getattr(layer, name)
