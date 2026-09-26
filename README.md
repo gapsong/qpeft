@@ -169,7 +169,7 @@ Every method below is a config over `{weight, scale, zero_point, adapter}` plus 
 |---|---|---|---|
 | [EfficientQAT](https://arxiv.org/abs/2407.11062) | 🔥 weight, scale, zero_point → then 🔥 scale | nothing to fold | ✅ implemented |
 | [QA-LoRA](https://arxiv.org/abs/2309.14717) | 🔥 group-pooled adapter | `zero_point` | ✅ implemented |
-| [PEQA](https://arxiv.org/abs/2305.14152) | 🔥 scale | nothing to fold | ✅ a config (`trainable_params=(SCALE,)`) |
+| [PEQA](https://arxiv.org/abs/2305.14152) | 🔥 scale | nothing to fold | ✅ implemented (`PEQAConfig`, group-wise only) |
 | [QA-BLoRA](https://arxiv.org/abs/2407.17029) | 🔥 balanced adapter (compressed inputs *and* outputs, higher rank) | `zero_point` | 🔜 next |
 | [L4Q](https://arxiv.org/abs/2402.04902) | 🔥 LoRA + quantization step size, jointly | codes (+ scale, zero_point) | 📋 planned |
 | [LR-QAT](https://arxiv.org/abs/2406.06385) | 🔥 low-rank term *inside* the rounding | codes | 📋 planned |
@@ -255,6 +255,7 @@ qpeft/
     tuners_utils.py    # BaseQuantTuner, QuantLinear                          (~ BaseTuner / lora.Linear)
     efficient_qat/{config,model,layer}.py
     qa_lora/{config,model,layer,torchao}.py
+    peqa/{config,model}.py
 examples/              # quickstart, train_efficient_qat, train_qa_lora, hf_injection, qat_trainer
 tests/                 # merge equivalence, backends, injection, config, save/load, phases, precision, trainer
 pyproject.toml
@@ -309,6 +310,10 @@ trainer.save_model()     # int artifact; load with QuantModel.from_pretrained(ba
 ```
 
 `QATTrainer` supports EfficientQAT only (see `examples/qat_trainer.py`).
+PEQA is one config: RTN init, then only the scales train; codes and zero-points stay frozen.
+It is the same mechanics as EfficientQAT's E2E-QP, without Block-AP before it.
+There is no official PEQA code, so `tests/test_peqa.py` checks it against the paper's equations.
+Two differences to the paper: qpeft is group-wise only (the paper's main results are per-channel), and qpeft clamps the scale to `[1e-4, 1e4]`.
 QA-LoRA runs with `get_quant_model` and your own loop or a plain HF `Trainer`; `param_groups` builds the optimizer groups.
 
 Save and load: only a merged model can be saved, as the integer artifact.

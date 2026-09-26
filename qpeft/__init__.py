@@ -9,6 +9,7 @@ from .utils import check_layer_merge_equivalence, check_merge_equivalence, verif
 from .training import param_groups
 from .block_ap import run_block_ap
 from .tuners.efficient_qat import EfficientQATConfig, EfficientQATModel, efficient_qat_schedule
+from .tuners.peqa import PEQAConfig, PEQAModel
 from .tuners.qa_lora import QALoraConfig, QALoraModel, ZeroPointFoldLoRA
 
 __version__ = "0.0.1"
@@ -18,6 +19,7 @@ __all__ = [
     "get_quant_model", "QuantModel", "check_merge_equivalence",
     "check_layer_merge_equivalence", "verify_quant_model", "param_groups", "run_block_ap",
     "EfficientQATConfig", "EfficientQATModel", "efficient_qat_schedule",
+    "PEQAConfig", "PEQAModel",
     "QALoraConfig", "QALoraModel", "ZeroPointFoldLoRA",
 ]
 

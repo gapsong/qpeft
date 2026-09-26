@@ -22,6 +22,7 @@ class QuantLinear(nn.Module):
     One layer serves every method; `config.trainable_params` decides what trains:
         EfficientQAT Block-AP   weight, scale, zero_point
         EfficientQAT E2E-QP     scale
+        PEQA                    scale
         QA-LoRA                 adapter
 
     A layer goes through three states:
