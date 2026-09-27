@@ -13,6 +13,7 @@
   <img alt="torchao" src="https://img.shields.io/badge/backend-torch%20%7C%20torchao-6366f1">
   <img alt="merge" src="https://img.shields.io/badge/merge-codes%20untouched-ec4899">
   <img alt="status" src="https://img.shields.io/badge/status-alpha-lightgrey">
+  <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
 </p>
 
 <p align="center">
@@ -94,7 +95,7 @@ That is why the merge is `z' = z - delta / s`, with codes and scale untouched.
 
 `merge_and_unload()` leaves, per `QuantLinear`:
 
-- `qweight`: the integer codes (`int32`, not bit-packed yet),
+- `qweight`: the integer codes, bit-packed into `int32` words in the GPTQ layout (`qpeft/packing.py`),
 - `scale` and `zero_point`: per-group floats in the base model's dtype.
 
 After a QA-LoRA fold, `z'` is in general **not an integer** any more.
@@ -106,7 +107,8 @@ The dequantization is still affine per group, `w = s * q + beta` with `beta = -z
 | GGUF `Q4_1` (`d` and `m` in fp16) | AWQ (`qzeros`) |
 | torchao int4 tinygemm layout (float zero-point domain) | torchao's integer zero-point domain |
 
-Rounding `z'` would break `fake_quant == merge`, so a future export into the right column has to refuse rather than approximate (qpeft has no export layer yet).
+Rounding `z'` would break `fake_quant == merge`, so a future export into the right column has to refuse rather than approximate.
+Today qpeft exports to one format of the left column: `qpeft.kernels.to_tinygemm` runs a merged 4-bit model on PyTorch's int4 tinygemm kernel (CUDA).
 
 ## What it does beyond peft
 
@@ -245,6 +247,7 @@ qpeft/
     torchao.py         # TorchaoIntUniformScheme: same contract on torchao primitives (optional)
     registry.py        # qat_scheme -> scheme, build_scheme
   packing.py           # pack_codes / unpack_codes: codes in the GPTQ qweight layout
+  kernels/tinygemm.py  # to_tinygemm: run a merged 4-bit model on the int4 tinygemm kernel (CUDA)
   mapping.py           # get_quant_model + registries                         (~ get_peft_model)
   peft_model.py        # QuantModel.merge_and_unload()                        (~ PeftModel)
   utils.py             # check_merge_equivalence, verify_quant_model          (the spine test)
@@ -257,7 +260,8 @@ qpeft/
     qa_lora/{config,model,layer,torchao}.py
     peqa/{config,model}.py
 examples/              # quickstart, train_efficient_qat, train_qa_lora, hf_injection, qat_trainer
-tests/                 # merge equivalence, backends, injection, config, save/load, phases, precision, trainer
+benchmarks/            # peqa_vs_official: PEQA against the official EfficientQAT code, and PEQA vs EfficientQAT
+tests/                 # merge equivalence, backends, injection, config, save/load, phases, precision, trainer, PEQA, tinygemm
 pyproject.toml
 ```
 
@@ -358,15 +362,22 @@ The `int_uniform` contract is implemented against two backends, and both are gre
 `backend="auto"` selects the pure-torch `ReferenceIntUniformScheme`, which is always available.
 `backend="torchao"` selects `TorchaoIntUniformScheme`, built on torchao's stable `quant_primitives` and imported lazily so torchao stays optional.
 `examples/train_*.py` show real training plus an integer merge, `examples/hf_injection.py` shows injection into a Hugging Face model, and `examples/qat_trainer.py` runs both EfficientQAT phases on Qwen3-0.6B.
-The test suite (`pytest`, plus `QPEFT_RUN_SLOW=1` for the tests that download a model) covers merge equivalence, both backends, injection, initialization, config, save/load, the EfficientQAT phases, half precision and the trainer.
+The test suite (`pytest`, plus `QPEFT_RUN_SLOW=1` for the tests that download a model) covers merge equivalence, both backends, injection, initialization, config, save/load, the EfficientQAT phases, PEQA against its paper, half precision, the trainer and the tinygemm export.
 
-Not measured yet: model quality.
-There is no perplexity benchmark against RTN or the official EfficientQAT numbers yet, so green tests prove correctness, not quality.
+Model quality is measured only on a small scale so far.
+`benchmarks/peqa_vs_official` runs PEQA against the official EfficientQAT code (same codes, same training steps, and the merged artifact runs in the official int layer) and compares RTN, PEQA, Block-AP and EfficientQAT by perplexity on SmolLM2-360M (WikiText-2 and C4).
+There is no comparison with the official EfficientQAT paper numbers yet, which use larger models and far more training data.
 
 Not supported:
 
 - Loading an already-quantized checkpoint (GPTQ, AWQ, torchao-packed).
   `TorchaoQuantLinear` is a stub, blocked by torchao's in-flux tensor-subclass API.
-- Exporting to GPTQ or other serving formats.
-  The artifact has the right shape for it (int codes, scale, integer zero-point), but no exporter is built.
+- Exporting to GPTQ, AWQ, MLX or GGUF files.
+  Only the tinygemm export exists (4 bits, CUDA).
+  An EfficientQAT or PEQA artifact has the right shape for GPTQ (int codes, scale, integer zero-point), but no exporter writes the file.
 - The `mlx` backend and the planned ternary scheme.
+
+## License
+
+MIT, see [`LICENSE`](LICENSE).
+`tests/test_packing.py` contains a function from AutoGPTQ (MIT), see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
