@@ -1,16 +1,16 @@
-"""~ peft/tuners/lora/torchao.py: dispatch onto an existing torchao-quantized layer."""
+"""Taking over a layer that torchao already quantized (peft: lora/torchao.py). Not built yet."""
 from __future__ import annotations
 
 from ..tuners_utils import QuantLinear
 
 
-def dispatch_torchao(target, config, *, get_apply_tensor_subclass):   # ~ peft dispatch_torchao
+def dispatch_torchao(target, config, *, get_apply_tensor_subclass):
     """When `target` is already backed by a torchao AffineQuantizedTensor, build a
     TorchaoQuantLinear so merge() folds into the tensor-subclass zero_point in place."""
     return TorchaoQuantLinear(target, config, get_apply_tensor_subclass=get_apply_tensor_subclass)
 
 
-class TorchaoQuantLinear(QuantLinear):        # ~ peft TorchaoLoraLinear
+class TorchaoQuantLinear(QuantLinear):        # peft: TorchaoLoraLinear
     """Adopt an ALREADY torchao-quantized layer (target.weight is a torchao packed
     tensor) and fold the adapter into its zero-point in place.
 

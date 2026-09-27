@@ -3,14 +3,17 @@ name = "qpeft"
 version = "0.0.1"
 description = "Quantization-aware, PEFT-style tuning whose merge stays quantized."
 requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 dependencies = ["torch>=2.4"]
 
 [project.optional-dependencies]
 torchao = ["torchao>=0.7"]           # real schemes/kernels bind to torchao
-dev = ["pytest>=8"]
+train = ["transformers>=5.7,<6", "accelerate>=0.26"]   # trainer.py uses Trainer internals; verified on 5.7
+dev = ["pytest>=8", "transformers>=5.7,<6", "accelerate>=0.26", "datasets>=2.14"]  # datasets: examples/qat_trainer.py
 
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]              # >=77: license / license-files (PEP 639)
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

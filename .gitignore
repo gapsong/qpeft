@@ -12,3 +12,5 @@ venv/
 .mypy_cache/
 .DS_Store
 CLAUDE.local.md
+TASKS.md
+runs/

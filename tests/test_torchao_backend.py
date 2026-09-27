@@ -14,7 +14,7 @@ from qpeft import (                                             # noqa: E402
     EfficientQATConfig, QALoraConfig, UnsupportedSchemeError,
     check_merge_equivalence, get_quant_model,
 )
-from qpeft.schemes import build_scheme                          # noqa: E402
+from qpeft.quant_schemes import build_scheme                          # noqa: E402
 from qpeft.tuners.qa_lora.layer import ZeroPointFoldLoRA        # noqa: E402
 from qpeft.tuners.tuners_utils import QuantLinear               # noqa: E402
 
