@@ -79,15 +79,21 @@ class QuantLinear(nn.Module):
 
     def _weight_in(self, dtype):
         """The weight this layer computes with, in the input's dtype."""
-        scale, zero_point = self.scale.to(dtype), self.zero_point.to(dtype)
+        scale = self.scale.to(dtype)
         if self.merged:
             # zero_point is not rounded: an adapter fold made it fractional.
-            return self.scheme.dequant(self.codes, scale, zero_point)
+            return self.scheme.dequant(self.codes, scale, self.zero_point.to(dtype))
         if not self.quant_enabled:
             return self.weight.to(dtype)
         if self.codes_frozen:
-            return self.scheme.dequant(self.codes, scale, self.scheme.round_zero_point(zero_point))
-        return self.scheme.fake_quant(self.weight.to(dtype), scale, zero_point)
+            return self.scheme.dequant(self.codes, scale, self._zero_point_used().to(dtype))
+        return self.scheme.fake_quant(self.weight.to(dtype), scale, self._zero_point_used().to(dtype))
+
+    def _zero_point_used(self):
+        """round(z) of the fp32 master: the integer that training, the frozen codes and the
+        merge all use. Rounding after a cast to bf16 could pick another integer
+        (7.49 -> bf16 7.5 -> 8), one full quant step off the frozen codes."""
+        return self.scheme.round_zero_point(self.zero_point)
 
     @torch.no_grad()
     def freeze_codes(self):
@@ -96,7 +102,7 @@ class QuantLinear(nn.Module):
         if self.codes_frozen or self.merged:
             return
         dtype = self.compute_dtype
-        codes = self.scheme.quantize(self.weight.to(dtype), self.scale.to(dtype), self.zero_point.to(dtype))
+        codes = self.scheme.quantize(self.weight.to(dtype), self.scale.to(dtype), self._zero_point_used().to(dtype))
         self.register_buffer("qweight", pack_codes(codes, self.config.bits))
         self.weight = None
         self.codes_frozen = True
