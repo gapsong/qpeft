@@ -16,6 +16,7 @@ import inspect
 import math
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import partial
 
 import torch
 import torch.nn.functional as F
@@ -133,31 +134,37 @@ class _StopForward(Exception):
     pass
 
 
+class _InputRecorder:
+    """A forward pre-hook on every block that records what the block receives.
+    At the last block it stops the forward: Block-AP does not need the model's output."""
+
+    def __init__(self, n_blocks):
+        self.hidden = []                              # the first block's input, one per batch
+        self.extras = [[] for _ in range(n_blocks)]   # per block: its extras, one per batch
+
+    def record(self, index, module, args, kwargs):
+        kwargs = dict(kwargs)
+        hidden = args[0] if args else kwargs.pop("hidden_states")
+        if index == 0:
+            self.hidden.append(hidden.detach())
+        # detach makes views, so blocks that share a mask do not copy it
+        self.extras[index].append(_BlockExtras(
+            args=_map_tensors(args[1:], torch.Tensor.detach),
+            kwargs={k: _map_tensors(v, torch.Tensor.detach) for k, v in kwargs.items()}))
+        if index == len(self.extras) - 1:
+            raise _StopForward
+
+
 @torch.no_grad()
 def _capture_inputs(model, blocks, batches):
     """Run the model up to the last block and record exactly what each block receives.
     Returns (hidden states of the first block, one per batch,
-             extras of every block, one list per block with one entry per batch).
-    The extras are views (detach), so blocks that share a mask do not copy it."""
-    hidden = []
-    extras = [[] for _ in blocks]
-
-    def recorder(index):
-        def record(module, args, kwargs):
-            kwargs = dict(kwargs)
-            h = args[0] if args else kwargs.pop("hidden_states")
-            if index == 0:
-                hidden.append(h.detach())
-            extras[index].append(_BlockExtras(
-                args=_map_tensors(args[1:], torch.Tensor.detach),
-                kwargs={k: _map_tensors(v, torch.Tensor.detach) for k, v in kwargs.items()}))
-            if index == len(blocks) - 1:
-                raise _StopForward               # the last block's own output is not needed
-        return record
-
+             extras of every block, one list per block with one entry per batch)."""
+    recorder = _InputRecorder(len(blocks))
     base = getattr(model, "base", model)
     no_cache = {"use_cache": False} if "use_cache" in inspect.signature(base.forward).parameters else {}
-    handles = [block.register_forward_pre_hook(recorder(i), with_kwargs=True) for i, block in enumerate(blocks)]
+    handles = [block.register_forward_pre_hook(partial(recorder.record, i), with_kwargs=True)
+               for i, block in enumerate(blocks)]
     try:
         for batch in batches:
             try:
@@ -168,11 +175,11 @@ def _capture_inputs(model, blocks, batches):
         for handle in handles:
             handle.remove()
 
-    if not hidden:
+    if not recorder.hidden:
         raise ValueError("no calibration batches for Block-AP")
-    if any(len(e) != len(hidden) for e in extras):
+    if any(len(e) != len(recorder.hidden) for e in recorder.extras):
         raise ValueError("Block-AP: not every block ran for every calibration batch.")
-    return hidden, extras
+    return recorder.hidden, recorder.extras
 
 
 def _check_phase_block_ap(model):
@@ -186,13 +193,14 @@ def _norm_weights(block):
     """The block's norm weights (RMSNorm, LayerNorm): every module's own `weight` parameter,
     except in linear layers. A QuantLinear trains through its own groups, and an nn.Linear
     that is not a target stays full precision and frozen."""
-    in_quant_linear = {id(p) for m in quant_layers(block) for p in m.parameters()}
+    inside_quant_linear = {id(p) for m in quant_layers(block) for p in m.parameters()}
     norms = []
     for module in block.modules():
-        weight = module._parameters.get("weight")
-        if weight is None or isinstance(module, nn.Linear) or id(weight) in in_quant_linear:
-            continue
-        norms.append(weight)
+        if isinstance(module, nn.Linear):
+            continue                                  # not a target: stays full precision, frozen
+        weight = dict(module.named_parameters(recurse=False)).get("weight")
+        if weight is not None and id(weight) not in inside_quant_linear:
+            norms.append(weight)
     return norms
 
 

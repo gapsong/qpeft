@@ -3,6 +3,7 @@ This is the property the whole library is built around."""
 from __future__ import annotations
 
 import copy
+import math
 
 import torch
 import torch.nn.functional as F
@@ -55,7 +56,7 @@ def check_layer_merge_equivalence(layer, x=None) -> float:
     merged_out = merged(x)
     max_err = (train_out - merged_out).abs().max().item()
     tol = _merge_tolerance(layer.compute_dtype, train_out)
-    if not max_err <= tol:                      # also catches a NaN max_err
+    if math.isnan(max_err) or max_err > tol:
         raise MergeMismatchError(f"merge != training forward, max|delta|={max_err} > {tol}")
     return max_err
 
