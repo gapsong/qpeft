@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
+import math
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -112,11 +113,14 @@ class QATTrainer(Trainer):
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         """The normal loss, but a loss of 0 or NaN stops training: nothing can be learned from it
-        (peft PR #2571: a loss stuck at 0.0 went unnoticed)."""
+        (peft PR #2571: a loss stuck at 0.0 went unnoticed). A batch whose labels are all -100
+        (a masked prompt, cut off) has loss 0 legitimately, so it is let through."""
         out = super().compute_loss(model, inputs, return_outputs=return_outputs, **kwargs)
-        loss = (out[0] if return_outputs else out).detach().float()
-        if not torch.isfinite(loss) or loss.item() == 0.0:
-            raise RuntimeError(f"training loss is {loss.item()} -- nothing can be learned. "
+        loss = (out[0] if return_outputs else out).detach().float().item()
+        labels = inputs.get("labels")
+        has_labelled_tokens = labels is None or bool((labels != -100).any())
+        if math.isnan(loss) or math.isinf(loss) or (loss == 0.0 and has_labelled_tokens):
+            raise RuntimeError(f"training loss is {loss} -- nothing can be learned. "
                                "Check group_size, the data and the labels.")
         return out
 

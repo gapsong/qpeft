@@ -248,6 +248,18 @@ def test_zero_loss_is_caught(tmp_path, monkeypatch):
         trainer.compute_loss(trainer.model, _collate([_Data()[0]]))
 
 
+
+def test_a_batch_without_labels_may_have_loss_zero(tmp_path, monkeypatch):
+    """SFT with the prompt masked: a micro-batch can have every label at -100. Its loss is
+    0.0 legitimately, and training must go on."""
+    import qpeft.trainer as T
+    trainer = _trainer(_llama(), tmp_path, quant_config=_cfg(phase="e2e_qp"))
+    monkeypatch.setattr(T.Trainer, "compute_loss",
+                        lambda self, model, inputs, return_outputs=False, **kw: torch.zeros((), requires_grad=True))
+    batch = _collate([_Data()[0]])
+    batch["labels"] = torch.full_like(batch["labels"], -100)
+    trainer.compute_loss(trainer.model, batch)          # must not raise
+
 # --- Block-AP calibration batches ---------------------------------------------------
 
 def test_block_ap_batches_hold_exactly_block_ap_train_size_rows(tmp_path):
