@@ -99,12 +99,15 @@ class QATTrainer(Trainer):
     def push_to_hub(self, *args, **kwargs):
         raise RuntimeError(f"push_to_hub is not supported; {SAVE_HINT}")
 
-    def create_optimizer(self):
-        """AdamW with one group per parameter kind, each with its own lr (official EfficientQAT)."""
+    def create_optimizer(self, model=None):
+        """AdamW with one group per parameter kind, each with its own lr (official EfficientQAT).
+        `model`: as in HF, the model to optimize when it is not self.model (a wrapped model
+        when HF delays optimizer creation)."""
         if self.optimizer is None:
             a = self.args
+            model = self.model if model is None else model
             quant_lr = a.e2e_lr if self.model.config.phase == "e2e_qp" else a.quant_lr
-            groups = param_groups(self.model, weight_lr=a.weight_lr, quant_lr=quant_lr,
+            groups = param_groups(model, weight_lr=a.weight_lr, quant_lr=quant_lr,
                                   adapter_lr=0.0, weight_decay=a.weight_decay)
             for g in groups:
                 g.pop("name")

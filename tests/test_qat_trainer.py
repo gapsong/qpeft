@@ -237,6 +237,15 @@ def test_block_ap_hands_over_to_an_e2e_qp_optimizer(tmp_path):
     assert {id(p) for p in groups[0]["params"]} == {id(m.scale) for m in trainer.model.quant_layers()}
 
 
+
+def test_create_optimizer_takes_the_model_like_hf(tmp_path):
+    """HF calls self.create_optimizer(model) when it delays optimizer creation (FSDP,
+    SageMaker MP); the groups must be built from that model."""
+    trainer = _trainer(_llama(), tmp_path, quant_config=_cfg(phase="e2e_qp"))
+    optimizer = trainer.create_optimizer(trainer.model)
+    params = {id(p) for g in optimizer.param_groups for p in g["params"]}
+    assert params == {id(m.scale) for m in trainer.model.quant_layers()}
+
 # --- loss guard (peft PR #2571) ----------------------------------------------------
 
 def test_zero_loss_is_caught(tmp_path, monkeypatch):
