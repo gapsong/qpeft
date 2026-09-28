@@ -21,6 +21,7 @@ from typing import Optional
 import torch
 from torch import nn
 from transformers import Trainer, TrainerCallback, TrainingArguments
+from transformers.utils import can_return_loss, find_labels
 
 from .block_ap import find_blocks, run_block_ap
 from .mapping import get_quant_model
@@ -154,6 +155,11 @@ class QATTrainer(Trainer):
         self.model_accepts_loss_kwargs = getattr(
             base, "accepts_loss_kwargs",
             any(p.kind == inspect.Parameter.VAR_KEYWORD for p in inspect.signature(base.forward).parameters.values()))
+        # The same for the label names and "can the model return a loss"; without them
+        # evaluate() and predict() compute no loss.
+        if self.args.label_names is None:
+            self.label_names = find_labels(base.__class__)
+        self.can_return_loss = can_return_loss(base.__class__)
 
     def _set_signature_columns_if_needed(self):
         if self._signature_columns is None:

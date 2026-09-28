@@ -298,6 +298,13 @@ def test_learning_rate_is_refused_with_a_pointer_to_e2e_lr(tmp_path):
         _trainer(_llama(), tmp_path, quant_config=_cfg(), learning_rate=3e-4)
 
 
+def test_evaluate_reports_the_loss(tmp_path):
+    """Trainer finds the label names in model.forward's signature. QuantModel.forward is
+    (*args, **kwargs), so they must come from the wrapped HF model, or eval has no loss."""
+    trainer = _trainer(_llama(), tmp_path, quant_config=_cfg(phase="e2e_qp"))
+    assert "eval_loss" in trainer.evaluate(eval_dataset=_Data(n=4))
+
+
 def test_push_to_hub_is_refused_with_a_pointer_to_save_model(tmp_path):
     trainer = _trainer(_llama(), tmp_path, quant_config=_cfg())
     with pytest.raises(RuntimeError, match="save_model"):
