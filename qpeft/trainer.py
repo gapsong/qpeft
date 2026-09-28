@@ -222,6 +222,13 @@ def _check_args(args):
                          "artifact); keep save_strategy='no' and call trainer.save_model() at the end.")
     if args.push_to_hub:
         raise ValueError(f"push_to_hub is not supported; {SAVE_HINT}")
+    if args.learning_rate != _default_of(TrainingArguments, "learning_rate"):
+        raise ValueError("QATTrainer does not use learning_rate; it trains with its own lrs: "
+                         "e2e_lr (E2E-QP scales), weight_lr and quant_lr (Block-AP).")
+
+
+def _default_of(dataclass_type, field_name):
+    return next(f.default for f in dataclasses.fields(dataclass_type) if f.name == field_name)
 
 
 def _fill_bit_dependent_lrs(args, bits):

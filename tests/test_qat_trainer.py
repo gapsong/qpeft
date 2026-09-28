@@ -291,6 +291,13 @@ def test_use_cache_goes_to_the_hf_model_not_the_qpeft_config(tmp_path):
     assert "use_cache" not in vars(trainer.model.config)
 
 
+def test_learning_rate_is_refused_with_a_pointer_to_e2e_lr(tmp_path):
+    """QATTrainer sets its own per-group lrs (e2e_lr, weight_lr, quant_lr). A changed
+    learning_rate would be silently ignored, so it is refused."""
+    with pytest.raises(ValueError, match="e2e_lr"):
+        _trainer(_llama(), tmp_path, quant_config=_cfg(), learning_rate=3e-4)
+
+
 def test_push_to_hub_is_refused_with_a_pointer_to_save_model(tmp_path):
     trainer = _trainer(_llama(), tmp_path, quant_config=_cfg())
     with pytest.raises(RuntimeError, match="save_model"):
