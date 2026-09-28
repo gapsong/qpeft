@@ -14,13 +14,15 @@ class ZeroPointFoldLoRA(nn.Module):
     Because A sees one value per quantization group, the weight change B @ A is the same
     for every input of a group. A per-group zero-point can absorb exactly that, which is
     why the QA-LoRA merge is exact and stays integer.
-    Average (not sum) pooling as in the official QA-LoRA (nn.AvgPool1d(group_size),
-    https://github.com/yuhuixu1993/qa-lora, peft_utils.py)."""
+    Average (not sum) pooling and dropout on the pooled input, as in the official QA-LoRA:
+    lora_B(lora_A(lora_dropout(qa_pool(x)))) (https://github.com/yuhuixu1993/qa-lora,
+    peft_utils.py). Dropout is active only in training, so the merge is unaffected."""
 
-    def __init__(self, in_features, out_features, r, alpha, group_size, *, device=None):
+    def __init__(self, in_features, out_features, r, alpha, group_size, *, dropout=0.0, device=None):
         super().__init__()
         self.group_size = group_size
         self.n_groups = in_features // group_size
+        self.dropout = nn.Dropout(dropout)
         # fp32 on the base layer's device, as peft's autocast_adapter_dtype:
         # a bf16 adapter would not move at a typical LoRA learning rate.
         # B = 0, so the adapter starts as a no-op.
@@ -30,7 +32,7 @@ class ZeroPointFoldLoRA(nn.Module):
 
     def forward(self, x):
         *lead, _ = x.shape
-        group_means = x.reshape(*lead, self.n_groups, self.group_size).mean(-1)
+        group_means = self.dropout(x.reshape(*lead, self.n_groups, self.group_size).mean(-1))
         return (group_means @ self.A.to(x.dtype).t() @ self.B.to(x.dtype).t()) * self.scaling
 
     def folded_delta(self):
@@ -42,5 +44,5 @@ class ZeroPointFoldLoRA(nn.Module):
 def dispatch_default(target: nn.Linear, config):
     adapter = ZeroPointFoldLoRA(target.in_features, target.out_features,
                                 config.r, config.lora_alpha, config.group_size,
-                                device=target.weight.device)
+                                dropout=config.lora_dropout, device=target.weight.device)
     return QuantLinear(target, build_scheme(config), config, adapter=adapter)

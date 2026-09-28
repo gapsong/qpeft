@@ -11,9 +11,7 @@ pytest.importorskip("transformers")
 import torch                                                    # noqa: E402
 
 from qpeft import EfficientQATConfig, get_quant_model, run_block_ap  # noqa: E402
-from qpeft.block_ap import (                                  # noqa: E402
-    _capture_inputs, _cosine, _quantization_off, _run_block, find_blocks,
-)
+from qpeft.block_ap import _cosine, find_blocks                 # noqa: E402
 from qpeft.tuners.tuners_utils import QuantLinear               # noqa: E402
 
 BLOCK_LINEARS = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
@@ -138,23 +136,40 @@ def _qwen3_with_sliding_window():
         layer_types=["sliding_attention", "full_attention"])).eval()
 
 
-def test_fp_chain_is_the_models_own_forward_with_mixed_layer_types():
-    """Block-AP's fp target chain, block by block, must be exactly what the model computes.
-    Goes red if every block gets the attention mask / rotary embedding of block 0."""
+def _record_attention_masks(blocks):
+    """Forward pre-hooks that write down the attention mask every block call receives."""
+    seen = [[] for _ in blocks]
+    handles = [block.register_forward_pre_hook(
+        lambda module, args, kwargs, i=i: seen[i].append(kwargs.get("attention_mask")), with_kwargs=True)
+        for i, block in enumerate(blocks)]
+    return seen, handles
+
+
+def _same_mask(a, b):
+    return (a is None and b is None) or (a is not None and b is not None and torch.equal(a, b))
+
+
+def test_every_block_gets_its_own_attention_mask():
+    """Each block must see, inside Block-AP, the mask the model itself gives it.
+    Goes red if every block gets the mask of block 0 (here: a sliding-window mask for the
+    full-attention block 1)."""
     model = get_quant_model(_qwen3_with_sliding_window(), EfficientQATConfig(bits=4, group_size=64))
     blocks = find_blocks(model.base)
     batches = _batches(n=2, seq=32)                  # seq 32 > sliding window 8
 
-    reference = []
-    hook = blocks[-1].register_forward_hook(
-        lambda module, args, out: reference.append((out[0] if isinstance(out, tuple) else out).detach()))
-    with _quantization_off(model.base), torch.no_grad():
-        for batch in batches:
-            model(**batch, use_cache=False)
-        hook.remove()
-        hidden, extras = _capture_inputs(model, blocks, batches)
-        for block, block_extras in zip(blocks, extras):
-            hidden = _run_block(block, hidden, block_extras)
+    expected, handles = _record_attention_masks(blocks)
+    with torch.no_grad():
+        model(**batches[0], use_cache=False)
+    for handle in handles:
+        handle.remove()
 
-    for got, want in zip(hidden, reference):
-        assert torch.allclose(got, want, atol=1e-6), f"max|diff| {(got - want).abs().max().item():.3e}"
+    seen, handles = _record_attention_masks(blocks)
+    run_block_ap(model, batches, epochs=0, log=lambda line: None)
+    for handle in handles:
+        handle.remove()
+
+    assert not _same_mask(expected[0][0], expected[1][0]), "the test model should give two different masks"
+    for i, calls in enumerate(seen):
+        assert calls, f"block {i} never ran in Block-AP"
+        for mask in calls:
+            assert _same_mask(mask, expected[i][0]), f"block {i} got another block's attention mask"

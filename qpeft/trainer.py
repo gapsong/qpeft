@@ -15,12 +15,14 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
+import math
 from dataclasses import dataclass, field
 from typing import Optional
 
 import torch
 from torch import nn
 from transformers import Trainer, TrainerCallback, TrainingArguments
+from transformers.utils import can_return_loss, find_labels
 
 from .block_ap import find_blocks, run_block_ap
 from .mapping import get_quant_model
@@ -97,12 +99,15 @@ class QATTrainer(Trainer):
     def push_to_hub(self, *args, **kwargs):
         raise RuntimeError(f"push_to_hub is not supported; {SAVE_HINT}")
 
-    def create_optimizer(self):
-        """AdamW with one group per parameter kind, each with its own lr (official EfficientQAT)."""
+    def create_optimizer(self, model=None):
+        """AdamW with one group per parameter kind, each with its own lr (official EfficientQAT).
+        `model`: as in HF, the model to optimize when it is not self.model (a wrapped model
+        when HF delays optimizer creation)."""
         if self.optimizer is None:
             a = self.args
+            model = self.model if model is None else model
             quant_lr = a.e2e_lr if self.model.config.phase == "e2e_qp" else a.quant_lr
-            groups = param_groups(self.model, weight_lr=a.weight_lr, quant_lr=quant_lr,
+            groups = param_groups(model, weight_lr=a.weight_lr, quant_lr=quant_lr,
                                   adapter_lr=0.0, weight_decay=a.weight_decay)
             for g in groups:
                 g.pop("name")
@@ -111,11 +116,14 @@ class QATTrainer(Trainer):
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         """The normal loss, but a loss of 0 or NaN stops training: nothing can be learned from it
-        (peft PR #2571: a loss stuck at 0.0 went unnoticed)."""
+        (peft PR #2571: a loss stuck at 0.0 went unnoticed). A batch whose labels are all -100
+        (a masked prompt, cut off) has loss 0 legitimately, so it is let through."""
         out = super().compute_loss(model, inputs, return_outputs=return_outputs, **kwargs)
-        loss = (out[0] if return_outputs else out).detach().float()
-        if not torch.isfinite(loss) or loss.item() == 0.0:
-            raise RuntimeError(f"training loss is {loss.item()} -- nothing can be learned. "
+        loss = (out[0] if return_outputs else out).detach().float().item()
+        labels = inputs.get("labels")
+        has_labelled_tokens = labels is None or bool((labels != -100).any())
+        if math.isnan(loss) or math.isinf(loss) or (loss == 0.0 and has_labelled_tokens):
+            raise RuntimeError(f"training loss is {loss} -- nothing can be learned. "
                                "Check group_size, the data and the labels.")
         return out
 
@@ -154,6 +162,11 @@ class QATTrainer(Trainer):
         self.model_accepts_loss_kwargs = getattr(
             base, "accepts_loss_kwargs",
             any(p.kind == inspect.Parameter.VAR_KEYWORD for p in inspect.signature(base.forward).parameters.values()))
+        # The same for the label names and "can the model return a loss"; without them
+        # evaluate() and predict() compute no loss.
+        if self.args.label_names is None:
+            self.label_names = find_labels(base.__class__)
+        self.can_return_loss = can_return_loss(base.__class__)
 
     def _set_signature_columns_if_needed(self):
         if self._signature_columns is None:
@@ -200,12 +213,18 @@ def _prepare_model(model, quant_config) -> QuantModel:
 
 def _block_linear_names(model: nn.Module) -> list[str]:
     """The paper's default targets: every nn.Linear inside the transformer blocks
-    (q/k/v/o_proj, gate/up/down_proj, ...), not lm_head."""
+    (q/k/v/o_proj, gate/up/down_proj, ...), not lm_head. All blocks are read, not just the
+    first: in a hybrid stack some linears exist only in some blocks."""
     try:
         blocks = find_blocks(model, layer_type=nn.Linear)
     except ValueError as e:
         raise ValueError(f"{e} Pass EfficientQATConfig(target_modules=[...]) explicitly.") from None
-    return sorted({name.split(".")[-1] for name, m in blocks[0].named_modules() if isinstance(m, nn.Linear)})
+    names = set()
+    for block in blocks:
+        for name, module in block.named_modules():
+            if isinstance(module, nn.Linear):
+                names.add(name.split(".")[-1])
+    return sorted(names)
 
 
 def _check_args(args):
@@ -216,6 +235,13 @@ def _check_args(args):
                          "artifact); keep save_strategy='no' and call trainer.save_model() at the end.")
     if args.push_to_hub:
         raise ValueError(f"push_to_hub is not supported; {SAVE_HINT}")
+    if args.learning_rate != _default_of(TrainingArguments, "learning_rate"):
+        raise ValueError("QATTrainer does not use learning_rate; it trains with its own lrs: "
+                         "e2e_lr (E2E-QP scales), weight_lr and quant_lr (Block-AP).")
+
+
+def _default_of(dataclass_type, field_name):
+    return next(f.default for f in dataclasses.fields(dataclass_type) if f.name == field_name)
 
 
 def _fill_bit_dependent_lrs(args, bits):
@@ -258,6 +284,8 @@ class _FirstStepMustMoveParams(TrainerCallback):
     def on_step_end(self, args, state, control, **kw):
         if not self.checking:
             return
+        if self.trainer.accelerator.optimizer_step_was_skipped:
+            return          # the fp16 GradScaler skipped this step (overflow); check the next one
         moved = any(not torch.equal(p, self.snapshot[n])
                     for n, p in self.trainer.model.named_parameters() if n in self.snapshot)
         self.snapshot, self.checking = None, False

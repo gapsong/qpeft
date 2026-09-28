@@ -87,6 +87,16 @@ def test_accepts_plain_hf_model_and_targets_block_linears(tmp_path):
     assert names == BLOCK_LINEARS                       # lm_head stays fp, as in the paper
 
 
+def test_default_targets_come_from_every_block(tmp_path):
+    """Hybrid stacks (Qwen3-Next, Jamba, dense-then-MoE) have linears that only some blocks
+    have. Taking the names from block 0 alone would leave those fp and say nothing."""
+    model = _llama()
+    model.model.layers[1].mlp.extra_proj = torch.nn.Linear(128, 128)   # only in block 1
+    trainer = _trainer(model, tmp_path, quant_config=_cfg())
+    assert set(trainer.model.config.target_modules) == BLOCK_LINEARS | {"extra_proj"}
+    assert isinstance(trainer.model.base.model.layers[1].mlp.extra_proj, QuantLinear)
+
+
 def test_default_config_is_paper_default(tmp_path):
     """No quant_config -> EfficientQATConfig() = bits 4, group_size 128."""
     from transformers import LlamaConfig, LlamaForCausalLM
@@ -227,6 +237,15 @@ def test_block_ap_hands_over_to_an_e2e_qp_optimizer(tmp_path):
     assert {id(p) for p in groups[0]["params"]} == {id(m.scale) for m in trainer.model.quant_layers()}
 
 
+
+def test_create_optimizer_takes_the_model_like_hf(tmp_path):
+    """HF calls self.create_optimizer(model) when it delays optimizer creation (FSDP,
+    SageMaker MP); the groups must be built from that model."""
+    trainer = _trainer(_llama(), tmp_path, quant_config=_cfg(phase="e2e_qp"))
+    optimizer = trainer.create_optimizer(trainer.model)
+    params = {id(p) for g in optimizer.param_groups for p in g["params"]}
+    assert params == {id(m.scale) for m in trainer.model.quant_layers()}
+
 # --- loss guard (peft PR #2571) ----------------------------------------------------
 
 def test_zero_loss_is_caught(tmp_path, monkeypatch):
@@ -237,6 +256,37 @@ def test_zero_loss_is_caught(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="training loss is 0.0"):
         trainer.compute_loss(trainer.model, _collate([_Data()[0]]))
 
+
+
+def test_a_batch_without_labels_may_have_loss_zero(tmp_path, monkeypatch):
+    """SFT with the prompt masked: a micro-batch can have every label at -100. Its loss is
+    0.0 legitimately, and training must go on."""
+    import qpeft.trainer as T
+    trainer = _trainer(_llama(), tmp_path, quant_config=_cfg(phase="e2e_qp"))
+    monkeypatch.setattr(T.Trainer, "compute_loss",
+                        lambda self, model, inputs, return_outputs=False, **kw: torch.zeros((), requires_grad=True))
+    batch = _collate([_Data()[0]])
+    batch["labels"] = torch.full_like(batch["labels"], -100)
+    trainer.compute_loss(trainer.model, batch)          # must not raise
+
+
+def test_a_step_skipped_by_the_fp16_grad_scaler_is_not_a_dead_run(tmp_path, monkeypatch):
+    """With fp16=True the GradScaler skips the first steps while it finds its scale (overflow),
+    so the parameters do not move. The first-step check must wait for a real step."""
+    trainer = _trainer(_llama(), tmp_path, quant_config=_cfg(phase="e2e_qp"))
+    steps = {"n": 0}
+    real_step = torch.optim.AdamW.step
+
+    def step_skipping_the_first(self, *args, **kwargs):
+        steps["n"] += 1
+        if steps["n"] == 1:
+            return None                                   # what GradScaler does on overflow
+        return real_step(self, *args, **kwargs)
+
+    monkeypatch.setattr(torch.optim.AdamW, "step", step_skipping_the_first)
+    monkeypatch.setattr(type(trainer.accelerator), "optimizer_step_was_skipped",
+                        property(lambda self: steps["n"] == 1))
+    trainer.train()                                       # must not raise
 
 # --- Block-AP calibration batches ---------------------------------------------------
 
@@ -279,6 +329,20 @@ def test_use_cache_goes_to_the_hf_model_not_the_qpeft_config(tmp_path):
     trainer = _trainer(model, tmp_path, quant_config=_cfg())     # TrainingArguments.use_cache = False
     assert trainer.model.base.config.use_cache is False
     assert "use_cache" not in vars(trainer.model.config)
+
+
+def test_learning_rate_is_refused_with_a_pointer_to_e2e_lr(tmp_path):
+    """QATTrainer sets its own per-group lrs (e2e_lr, weight_lr, quant_lr). A changed
+    learning_rate would be silently ignored, so it is refused."""
+    with pytest.raises(ValueError, match="e2e_lr"):
+        _trainer(_llama(), tmp_path, quant_config=_cfg(), learning_rate=3e-4)
+
+
+def test_evaluate_reports_the_loss(tmp_path):
+    """Trainer finds the label names in model.forward's signature. QuantModel.forward is
+    (*args, **kwargs), so they must come from the wrapped HF model, or eval has no loss."""
+    trainer = _trainer(_llama(), tmp_path, quant_config=_cfg(phase="e2e_qp"))
+    assert "eval_loss" in trainer.evaluate(eval_dataset=_Data(n=4))
 
 
 def test_push_to_hub_is_refused_with_a_pointer_to_save_model(tmp_path):

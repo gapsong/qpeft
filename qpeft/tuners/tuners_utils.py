@@ -2,6 +2,7 @@
 Same roles as peft/tuners/tuners_utils.py (BaseTuner) and peft's lora.Linear."""
 from __future__ import annotations
 
+import dataclasses
 from typing import Optional
 
 import torch
@@ -14,6 +15,9 @@ from ..quant_schemes import QuantScheme, UnsupportedSchemeError
 
 WEIGHT, SCALE, ZERO_POINT, ADAPTER = (TrainableParams.WEIGHT, TrainableParams.SCALE,
                                       TrainableParams.ZERO_POINT, TrainableParams.ADAPTER)
+# The only config fields a phase switch may change; every other field (targets, bits,
+# adapter rank, ...) describes what was built and must stay as it is.
+PHASE_FIELDS = ("phase", "trainable_params")
 
 
 class QuantLinear(nn.Module):
@@ -179,11 +183,14 @@ class QuantLinear(nn.Module):
         (the weight would then train while the frozen codes stay as they are)."""
         if self.merged:
             raise UnsupportedSchemeError("layer is merged (an int artifact); it cannot change phase.")
-        for field in ("quant_tuning_type", "bits", "group_size", "qat_scheme", "backend"):
-            old, new = getattr(self.config, field), getattr(config, field)
+        for field in dataclasses.fields(self.config):
+            if field.name in PHASE_FIELDS:
+                continue
+            old, new = getattr(self.config, field.name), getattr(config, field.name, None)
             if old != new:
                 raise UnsupportedSchemeError(
-                    f"phase switch may only change the trainable set, not {field!r} ({old!r} -> {new!r}). Refusing.")
+                    f"phase switch may only change the trainable set, not {field.name!r} "
+                    f"({old!r} -> {new!r}). Refusing.")
         self.scheme.assert_supported(config)
         trainable = set(config.trainable_params)
         if ADAPTER in trainable and self.adapter is None:

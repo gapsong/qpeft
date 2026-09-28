@@ -43,7 +43,8 @@ class TinyGemmLinear(nn.Module):
     def __init__(self, layer: QuantLinear):
         super().__init__()
         check_supported(layer)
-        cuda = torch.device("cuda")
+        # The layer's own GPU (a model can be split over several); a CPU layer goes to the current one.
+        cuda = layer.qweight.device if layer.qweight.is_cuda else torch.device("cuda")
         self.in_features = layer.in_features
         self.out_features = layer.out_features
         self.group_size = layer.config.group_size

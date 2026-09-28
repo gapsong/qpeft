@@ -17,7 +17,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from qpeft import EfficientQATConfig, efficient_qat_schedule, get_quant_model
+from qpeft import EfficientQATConfig, UnsupportedSchemeError, efficient_qat_schedule, get_quant_model
 from qpeft.tuners.tuners_utils import QuantLinear
 
 TRAINABLE = {
@@ -151,3 +151,14 @@ def test_schedule_switches_trainable_set_and_keeps_phase1_results():
     before = _snapshot(model)
     _train(model)
     _assert_only_allowed_changed(before, _snapshot(model), TRAINABLE["e2e_qp"])
+
+
+# --- 5. a phase switch may change only the trainable set ---------------------------
+
+def test_phase_switch_refuses_other_target_modules():
+    """Phase 2 with fewer targets would be stored as the model config while the untargeted
+    layers stay quantized; save/load then fails. It must be refused at the switch."""
+    base = _base()
+    get_quant_model(base, EfficientQATConfig(bits=4, group_size=64, phase="block_ap", target_modules=["0", "2"]))
+    with pytest.raises(UnsupportedSchemeError, match="target_modules"):
+        get_quant_model(base, EfficientQATConfig(bits=4, group_size=64, phase="e2e_qp", target_modules=["0"]))
