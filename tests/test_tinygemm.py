@@ -122,3 +122,15 @@ def test_wrong_zero_point_is_caught():
     x = torch.randn(5, 512, device="cuda")
     with torch.no_grad():
         assert _rel_err(kernel(x), layer(x)) > 1e-1
+
+
+@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="needs two GPUs")
+def test_buffers_stay_on_the_layers_gpu():
+    """A model split over cuda:0 and cuda:1: a layer on cuda:1 must keep its kernel buffers
+    there, not move them to the current default GPU."""
+    _, layer = _merged(EfficientQATConfig(bits=4, group_size=64, phase="e2e_qp"))
+    layer = layer.to("cuda:1")
+    tg = TinyGemmLinear(layer)
+    assert tg.weight_int4pack.device == tg.scales_and_zeros.device == torch.device("cuda:1")
+    x = torch.randn(4, 256, device="cuda:1")
+    assert tg(x).device == torch.device("cuda:1")
