@@ -40,6 +40,7 @@ The quantized-training space has a gap that nobody yet owns as *one* feature.
   Real QAT there is backend-specific and in progress (the MLX QAT PR), not a backend-agnostic contract.
 
 `qpeft` closes exactly that seam: training over a quantized substrate whose merge stays quantized, as a first-class contract with a correctness test.
+Its author ([@gapsong](https://github.com/gapsong)) added QA-LoRA to 🤗 peft ([PR #2571](https://github.com/huggingface/peft/pull/2571)); qpeft is the step after that, where the merge keeps the integer model.
 
 ## The core principle
 
@@ -356,7 +357,7 @@ model = get_quant_model(hf, EfficientQATConfig(
 ## References
 
 - EfficientQAT: [paper](https://arxiv.org/abs/2407.11062), [OpenGVLab/EfficientQAT](https://github.com/OpenGVLab/EfficientQAT) (quantizer, Block-AP, E2E-QP defaults).
-- QA-LoRA: [paper](https://arxiv.org/abs/2309.14717), [yuhuixu1993/qa-lora](https://github.com/yuhuixu1993/qa-lora) (group-pooled adapter).
+- QA-LoRA: [paper](https://arxiv.org/abs/2309.14717), [yuhuixu1993/qa-lora](https://github.com/yuhuixu1993/qa-lora) (group-pooled adapter), and QA-LoRA in 🤗 peft ([PR #2571](https://github.com/huggingface/peft/pull/2571)).
 - GPTQ packing: [AutoGPTQ](https://github.com/AutoGPTQ/AutoGPTQ) (MIT), the `qweight` layout of `qpeft/packing.py`.
 - [🤗 peft](https://github.com/huggingface/peft): names and structure; [torchao](https://github.com/pytorch/ao): the optional backend.
 
