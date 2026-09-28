@@ -220,7 +220,9 @@ The same as the official code:
 
 - Min/max (RTN) init, asymmetric, integer zero-point, scale clamped to `[1e-4, 1e4]`.
 - Block-AP: block by block, MSE against the fp block output; the input comes from the quantized chain, the target from the fp chain.
-- Block-AP trains weight (`weight_lr`), scale and zero-point (`quant_lr`) and the block norms (`*.weight`, the official name filter), with AdamW, `wd=0`, 2 epochs, cosine down to `lr / 20`, batch size 2, in fp32.
+- Block-AP trains weight (`weight_lr`), scale and zero-point (`quant_lr`) and the block norms, with AdamW, `wd=0`, 2 epochs, cosine down to `lr / 20`, batch size 2, in fp32.
+  The official code trains every parameter with `weight` in its name; in a fully targeted block those are the quantized weights and the norms.
+  An `nn.Linear` that is not a target stays full precision and frozen.
 - E2E-QP: codes frozen, only the scale trains; batch 4 x gradient accumulation 8, cosine with 3 % warmup, `max_grad_norm=0.3`.
 - Learning rates: `quant_lr=1e-4`, `weight_lr` and the E2E-QP lr `1e-5` (`2e-5` at 2 bits).
 
@@ -334,7 +336,7 @@ Run the spine test per layer before trusting a scheme:
 
 ```python
 from qpeft import check_merge_equivalence
-check_merge_equivalence(scheme, w, s, z, adapter, x)   # fake_quant (train) == merge (export)
+check_merge_equivalence(scheme, w, s, z, adapter, x)   # fake_quant (train) == merge (export), else MergeMismatchError
 ```
 
 Load a Hugging Face model and inject `QuantLinear` into it (`examples/hf_injection.py`):
