@@ -36,10 +36,10 @@ def run_block_ap(model, batches, *, epochs: int = 2, weight_lr: float = 1e-5,
     model.eval()                                  # no dropout: reconstruction is deterministic
 
     blocks = find_blocks(getattr(model, "base", model))
-    fp_hidden, extras = _capture_inputs(model, blocks[0], batches)
+    fp_hidden, extras_per_block = _capture_inputs(model, blocks, batches)
     q_hidden = fp_hidden
 
-    for i, block in enumerate(blocks):
+    for i, (block, extras) in enumerate(zip(blocks, extras_per_block)):
         with _quantization_off(block):
             target = _run_block(block, fp_hidden, extras)
         mse_before = _mean_mse(block, q_hidden, extras, target)
@@ -102,7 +102,8 @@ def find_blocks(model: nn.Module, layer_type: type = QuantLinear) -> nn.ModuleLi
 @dataclass
 class _BlockExtras:
     """What a block gets besides the hidden states: in HF, the attention mask, the rotary
-    cos/sin, ... . They are the same for every block, so they are captured once."""
+    cos/sin, ... . They can differ per block (a sliding-window block gets another mask than a
+    full-attention block), so they are captured for every block."""
     args: tuple
     kwargs: dict
 
@@ -133,22 +134,30 @@ class _StopForward(Exception):
 
 
 @torch.no_grad()
-def _capture_inputs(model, first_block, batches):
-    """Run the model up to the first block and record exactly what that block receives.
-    Returns (hidden states, extras), one entry per batch."""
-    hidden, extras = [], []
+def _capture_inputs(model, blocks, batches):
+    """Run the model up to the last block and record exactly what each block receives.
+    Returns (hidden states of the first block, one per batch,
+             extras of every block, one list per block with one entry per batch).
+    The extras are views (detach), so blocks that share a mask do not copy it."""
+    hidden = []
+    extras = [[] for _ in blocks]
 
-    def record_and_stop(module, args, kwargs):
-        kwargs = dict(kwargs)
-        h = args[0] if args else kwargs.pop("hidden_states")
-        hidden.append(h.detach())
-        extras.append(_BlockExtras(args=_map_tensors(args[1:], torch.Tensor.detach),
-                                   kwargs={k: _map_tensors(v, torch.Tensor.detach) for k, v in kwargs.items()}))
-        raise _StopForward
+    def recorder(index):
+        def record(module, args, kwargs):
+            kwargs = dict(kwargs)
+            h = args[0] if args else kwargs.pop("hidden_states")
+            if index == 0:
+                hidden.append(h.detach())
+            extras[index].append(_BlockExtras(
+                args=_map_tensors(args[1:], torch.Tensor.detach),
+                kwargs={k: _map_tensors(v, torch.Tensor.detach) for k, v in kwargs.items()}))
+            if index == len(blocks) - 1:
+                raise _StopForward               # the last block's own output is not needed
+        return record
 
     base = getattr(model, "base", model)
     no_cache = {"use_cache": False} if "use_cache" in inspect.signature(base.forward).parameters else {}
-    handle = first_block.register_forward_pre_hook(record_and_stop, with_kwargs=True)
+    handles = [block.register_forward_pre_hook(recorder(i), with_kwargs=True) for i, block in enumerate(blocks)]
     try:
         for batch in batches:
             try:
@@ -156,10 +165,13 @@ def _capture_inputs(model, first_block, batches):
             except _StopForward:
                 pass
     finally:
-        handle.remove()
+        for handle in handles:
+            handle.remove()
 
     if not hidden:
         raise ValueError("no calibration batches for Block-AP")
+    if any(len(e) != len(hidden) for e in extras):
+        raise ValueError("Block-AP: not every block ran for every calibration batch.")
     return hidden, extras
 
 

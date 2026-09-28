@@ -11,7 +11,9 @@ pytest.importorskip("transformers")
 import torch                                                    # noqa: E402
 
 from qpeft import EfficientQATConfig, get_quant_model, run_block_ap  # noqa: E402
-from qpeft.block_ap import _cosine, find_blocks                 # noqa: E402
+from qpeft.block_ap import (                                  # noqa: E402
+    _capture_inputs, _cosine, _quantization_off, _run_block, find_blocks,
+)
 from qpeft.tuners.tuners_utils import QuantLinear               # noqa: E402
 
 BLOCK_LINEARS = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
@@ -122,3 +124,37 @@ def test_cosine_goes_from_lr_down_to_lr_over_min_lr_factor():
     assert _cosine(150, 100, 20) == pytest.approx(1 / 20)      # clamped, never below the floor
     assert all(_cosine(s, 100, 20) >= _cosine(s + 1, 100, 20) for s in range(100))
     assert not math.isnan(_cosine(0, 0, 20))
+
+
+def _qwen3_with_sliding_window():
+    """Two blocks of different attention types: block 0 sliding window (8), block 1 full.
+    HF passes each block its own attention mask."""
+    from transformers import Qwen3Config, Qwen3ForCausalLM
+    torch.manual_seed(0)
+    return Qwen3ForCausalLM(Qwen3Config(
+        hidden_size=128, intermediate_size=256, num_hidden_layers=2, num_attention_heads=4,
+        num_key_value_heads=4, head_dim=32, vocab_size=320, max_position_embeddings=64,
+        use_sliding_window=True, sliding_window=8,
+        layer_types=["sliding_attention", "full_attention"])).eval()
+
+
+def test_fp_chain_is_the_models_own_forward_with_mixed_layer_types():
+    """Block-AP's fp target chain, block by block, must be exactly what the model computes.
+    Goes red if every block gets the attention mask / rotary embedding of block 0."""
+    model = get_quant_model(_qwen3_with_sliding_window(), EfficientQATConfig(bits=4, group_size=64))
+    blocks = find_blocks(model.base)
+    batches = _batches(n=2, seq=32)                  # seq 32 > sliding window 8
+
+    reference = []
+    hook = blocks[-1].register_forward_hook(
+        lambda module, args, out: reference.append((out[0] if isinstance(out, tuple) else out).detach()))
+    with _quantization_off(model.base), torch.no_grad():
+        for batch in batches:
+            model(**batch, use_cache=False)
+        hook.remove()
+        hidden, extras = _capture_inputs(model, blocks, batches)
+        for block, block_extras in zip(blocks, extras):
+            hidden = _run_block(block, hidden, block_extras)
+
+    for got, want in zip(hidden, reference):
+        assert torch.allclose(got, want, atol=1e-6), f"max|diff| {(got - want).abs().max().item():.3e}"
