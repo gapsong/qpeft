@@ -351,6 +351,8 @@ model = get_quant_model(hf, EfficientQATConfig(
     target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]))
 ```
 
+`target_modules` matches as in peft: a list entry is a module's full name or its last dotted part(s) (`"v_proj"` does not also hit `qkv_proj`), a string is a regex on the full name, and `None` takes every `nn.Linear`.
+
 ## References
 
 - EfficientQAT: [paper](https://arxiv.org/abs/2407.11062), [OpenGVLab/EfficientQAT](https://github.com/OpenGVLab/EfficientQAT) (quantizer, Block-AP, E2E-QP defaults).
