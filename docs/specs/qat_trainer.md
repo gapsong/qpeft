@@ -36,6 +36,7 @@ Full script: `examples/qat_trainer.py`.
 | targets match nothing | `ValueError` |
 | already merged `QuantModel` | `ValueError` |
 | `save_strategy != "no"` | `ValueError` (a mid-training checkpoint is not the int artifact) |
+| `learning_rate` changed from the HF default | `ValueError` (unused; set `e2e_lr` / `weight_lr` / `quant_lr`) |
 
 ## Behavior
 
@@ -49,10 +50,11 @@ gradient accumulation, checkpoints and multi-GPU come from HF.
    then only `scale` is trainable. Block-AP results are carried over, never re-initialized.
 3. **Optimizer.** One param group per parameter kind, from `QATTrainingArguments`:
    `weight_lr`, `quant_lr` (scale, zero_point), `e2e_lr` in E2E-QP. The HF
-   `learning_rate` is not used for qpeft parameters (documented, not silent).
+   `learning_rate` is not used; a changed value is refused (see the refusal table).
 4. **Guards during training.**
    - trainable set == the set the phase allows (checked at every phase start)
-   - loss is finite and not exactly 0.0 (peft PR #2571 lesson)
+   - loss is finite and not exactly 0.0 (peft PR #2571 lesson); a batch whose labels
+     are all -100 may have loss 0.0
    - after the first optimizer step at least one trainable parameter moved
 5. **End of `train()`.** Run `check_merge_equivalence` on every `QuantLinear`.
    Red -> raise, never hand back a model.
@@ -88,7 +90,8 @@ dtype, so `fake_quant == merge` stays exact in bf16/fp16. Block-AP also trains
 the block norms (see the README, "EfficientQAT compared to the official implementation").
 
 The warmup starts at lr 0, so the "something moved" guard checks the first
-optimizer step with lr > 0, and fails at the end if there was none.
+optimizer step with lr > 0 that the fp16 GradScaler did not skip, and fails at
+the end if there was none.
 
 Bit-dependent defaults are resolved from the model's config at `__init__`
 and logged, so the user sees what actually runs.
