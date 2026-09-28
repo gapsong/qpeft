@@ -260,6 +260,25 @@ def test_a_batch_without_labels_may_have_loss_zero(tmp_path, monkeypatch):
     batch["labels"] = torch.full_like(batch["labels"], -100)
     trainer.compute_loss(trainer.model, batch)          # must not raise
 
+
+def test_a_step_skipped_by_the_fp16_grad_scaler_is_not_a_dead_run(tmp_path, monkeypatch):
+    """With fp16=True the GradScaler skips the first steps while it finds its scale (overflow),
+    so the parameters do not move. The first-step check must wait for a real step."""
+    trainer = _trainer(_llama(), tmp_path, quant_config=_cfg(phase="e2e_qp"))
+    steps = {"n": 0}
+    real_step = torch.optim.AdamW.step
+
+    def step_skipping_the_first(self, *args, **kwargs):
+        steps["n"] += 1
+        if steps["n"] == 1:
+            return None                                   # what GradScaler does on overflow
+        return real_step(self, *args, **kwargs)
+
+    monkeypatch.setattr(torch.optim.AdamW, "step", step_skipping_the_first)
+    monkeypatch.setattr(type(trainer.accelerator), "optimizer_step_was_skipped",
+                        property(lambda self: steps["n"] == 1))
+    trainer.train()                                       # must not raise
+
 # --- Block-AP calibration batches ---------------------------------------------------
 
 def test_block_ap_batches_hold_exactly_block_ap_train_size_rows(tmp_path):

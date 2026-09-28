@@ -281,6 +281,8 @@ class _FirstStepMustMoveParams(TrainerCallback):
     def on_step_end(self, args, state, control, **kw):
         if not self.checking:
             return
+        if self.trainer.accelerator.optimizer_step_was_skipped:
+            return          # the fp16 GradScaler skipped this step (overflow); check the next one
         moved = any(not torch.equal(p, self.snapshot[n])
                     for n, p in self.trainer.model.named_parameters() if n in self.snapshot)
         self.snapshot, self.checking = None, False
