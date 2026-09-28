@@ -16,6 +16,7 @@ import inspect
 import math
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import partial
 
 import torch
 import torch.nn.functional as F
@@ -36,10 +37,10 @@ def run_block_ap(model, batches, *, epochs: int = 2, weight_lr: float = 1e-5,
     model.eval()                                  # no dropout: reconstruction is deterministic
 
     blocks = find_blocks(getattr(model, "base", model))
-    fp_hidden, extras = _capture_inputs(model, blocks[0], batches)
+    fp_hidden, extras_per_block = _capture_inputs(model, blocks, batches)
     q_hidden = fp_hidden
 
-    for i, block in enumerate(blocks):
+    for i, (block, extras) in enumerate(zip(blocks, extras_per_block)):
         with _quantization_off(block):
             target = _run_block(block, fp_hidden, extras)
         mse_before = _mean_mse(block, q_hidden, extras, target)
@@ -102,7 +103,8 @@ def find_blocks(model: nn.Module, layer_type: type = QuantLinear) -> nn.ModuleLi
 @dataclass
 class _BlockExtras:
     """What a block gets besides the hidden states: in HF, the attention mask, the rotary
-    cos/sin, ... . They are the same for every block, so they are captured once."""
+    cos/sin, ... . They can differ per block (a sliding-window block gets another mask than a
+    full-attention block), so they are captured for every block."""
     args: tuple
     kwargs: dict
 
@@ -132,23 +134,37 @@ class _StopForward(Exception):
     pass
 
 
-@torch.no_grad()
-def _capture_inputs(model, first_block, batches):
-    """Run the model up to the first block and record exactly what that block receives.
-    Returns (hidden states, extras), one entry per batch."""
-    hidden, extras = [], []
+class _InputRecorder:
+    """A forward pre-hook on every block that records what the block receives.
+    At the last block it stops the forward: Block-AP does not need the model's output."""
 
-    def record_and_stop(module, args, kwargs):
+    def __init__(self, n_blocks):
+        self.hidden = []                              # the first block's input, one per batch
+        self.extras = [[] for _ in range(n_blocks)]   # per block: its extras, one per batch
+
+    def record(self, index, module, args, kwargs):
         kwargs = dict(kwargs)
-        h = args[0] if args else kwargs.pop("hidden_states")
-        hidden.append(h.detach())
-        extras.append(_BlockExtras(args=_map_tensors(args[1:], torch.Tensor.detach),
-                                   kwargs={k: _map_tensors(v, torch.Tensor.detach) for k, v in kwargs.items()}))
-        raise _StopForward
+        hidden = args[0] if args else kwargs.pop("hidden_states")
+        if index == 0:
+            self.hidden.append(hidden.detach())
+        # detach makes views, so blocks that share a mask do not copy it
+        self.extras[index].append(_BlockExtras(
+            args=_map_tensors(args[1:], torch.Tensor.detach),
+            kwargs={k: _map_tensors(v, torch.Tensor.detach) for k, v in kwargs.items()}))
+        if index == len(self.extras) - 1:
+            raise _StopForward
 
+
+@torch.no_grad()
+def _capture_inputs(model, blocks, batches):
+    """Run the model up to the last block and record exactly what each block receives.
+    Returns (hidden states of the first block, one per batch,
+             extras of every block, one list per block with one entry per batch)."""
+    recorder = _InputRecorder(len(blocks))
     base = getattr(model, "base", model)
     no_cache = {"use_cache": False} if "use_cache" in inspect.signature(base.forward).parameters else {}
-    handle = first_block.register_forward_pre_hook(record_and_stop, with_kwargs=True)
+    handles = [block.register_forward_pre_hook(partial(recorder.record, i), with_kwargs=True)
+               for i, block in enumerate(blocks)]
     try:
         for batch in batches:
             try:
@@ -156,11 +172,14 @@ def _capture_inputs(model, first_block, batches):
             except _StopForward:
                 pass
     finally:
-        handle.remove()
+        for handle in handles:
+            handle.remove()
 
-    if not hidden:
+    if not recorder.hidden:
         raise ValueError("no calibration batches for Block-AP")
-    return hidden, extras
+    if any(len(e) != len(recorder.hidden) for e in recorder.extras):
+        raise ValueError("Block-AP: not every block ran for every calibration batch.")
+    return recorder.hidden, recorder.extras
 
 
 def _check_phase_block_ap(model):
@@ -171,10 +190,18 @@ def _check_phase_block_ap(model):
 
 
 def _norm_weights(block):
-    """The block's `*.weight` parameters outside QuantLinear (RMSNorm, LayerNorm)."""
-    in_quant_linear = {id(p) for m in quant_layers(block) for p in m.parameters()}
-    return [p for name, p in block.named_parameters()
-            if id(p) not in in_quant_linear and name.rsplit(".", 1)[-1] == "weight"]
+    """The block's norm weights (RMSNorm, LayerNorm): every module's own `weight` parameter,
+    except in linear layers. A QuantLinear trains through its own groups, and an nn.Linear
+    that is not a target stays full precision and frozen."""
+    inside_quant_linear = {id(p) for m in quant_layers(block) for p in m.parameters()}
+    norms = []
+    for module in block.modules():
+        if isinstance(module, nn.Linear):
+            continue                                  # not a target: stays full precision, frozen
+        weight = dict(module.named_parameters(recurse=False)).get("weight")
+        if weight is not None and id(weight) not in inside_quant_linear:
+            norms.append(weight)
+    return norms
 
 
 def _cosine(step, total, min_lr_factor):

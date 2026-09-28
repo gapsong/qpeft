@@ -81,3 +81,42 @@ def test_frozen_codes_merge_is_exact_after_scale_moves():
     s = s * (1 + 0.1 * torch.randn_like(s))    # a trained scale, codes unchanged
     err = check_merge_equivalence(scheme, w, s, z, adapter=None, x=torch.randn(8, 128), codes=codes)
     assert err == 0.0
+
+
+# --- the gate must fail loudly, also under python -O --------------------------------
+
+_BROKEN_MERGE = """
+import torch
+from qpeft import EfficientQATConfig, MergeMismatchError, check_merge_equivalence
+from qpeft.quant_schemes import build_scheme
+
+scheme = build_scheme(EfficientQATConfig(bits=4, group_size=32, phase="block_ap"))
+scheme.merge = lambda wq, s, z, adapter=None: (wq, s * 2, z)      # a merge that drifted
+w = torch.randn(64, 128) * 0.02
+s, z = scheme.init_qparams(w, 32)
+try:
+    check_merge_equivalence(scheme, w, s, z, adapter=None, x=torch.randn(8, 128))
+except MergeMismatchError:
+    print("REFUSED")
+"""
+
+
+@pytest.mark.parametrize("flags", [[], ["-O"]], ids=["plain", "python -O"])
+def test_a_drifted_merge_is_refused_even_under_python_O(flags):
+    """The gate is a raise, not an assert: `python -O` strips asserts."""
+    import subprocess
+    import sys
+    out = subprocess.run([sys.executable, *flags, "-c", _BROKEN_MERGE],
+                         capture_output=True, text=True, check=True).stdout
+    assert out.strip() == "REFUSED"
+
+
+def test_layer_gate_refuses_a_drifted_merge():
+    from qpeft import MergeMismatchError, check_layer_merge_equivalence
+    torch.manual_seed(0)
+    model = get_quant_model(nn.Sequential(nn.Linear(128, 64)),
+                            EfficientQATConfig(bits=4, group_size=32, phase="block_ap"))
+    layer = next(m for m in model.modules() if isinstance(m, QuantLinear))
+    layer.scheme.merge = lambda wq, s, z, adapter=None: (wq, s * 2, z)
+    with pytest.raises(MergeMismatchError):
+        check_layer_merge_equivalence(layer)

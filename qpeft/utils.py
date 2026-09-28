@@ -3,12 +3,18 @@ This is the property the whole library is built around."""
 from __future__ import annotations
 
 import copy
+import math
 
 import torch
 import torch.nn.functional as F
 
 from .quant_schemes import QuantScheme
 from .tuners.tuners_utils import QuantLinear
+
+
+class MergeMismatchError(RuntimeError):
+    """The merged (integer) path does not compute what the training path computes.
+    A raise, not an assert: `python -O` would strip an assert and let a wrong artifact through."""
 
 
 @torch.no_grad()
@@ -29,7 +35,8 @@ def check_merge_equivalence(scheme: QuantScheme, w, s, z, adapter, x, atol: floa
     merged_codes, merged_s, merged_z = scheme.merge(codes, s, z, adapter)
     merged_out = F.linear(x, scheme.dequant(merged_codes, merged_s, merged_z))
     max_err = (train_out - merged_out).abs().max().item()
-    assert torch.allclose(train_out, merged_out, atol=atol), f"merge != fake_quant, max|delta|={max_err}"
+    if not torch.allclose(train_out, merged_out, atol=atol):
+        raise MergeMismatchError(f"merge != fake_quant, max|delta|={max_err}")
     return max_err
 
 
@@ -49,7 +56,8 @@ def check_layer_merge_equivalence(layer, x=None) -> float:
     merged_out = merged(x)
     max_err = (train_out - merged_out).abs().max().item()
     tol = _merge_tolerance(layer.compute_dtype, train_out)
-    assert max_err <= tol, f"merge != training forward, max|delta|={max_err} > {tol}"
+    if math.isnan(max_err) or max_err > tol:
+        raise MergeMismatchError(f"merge != training forward, max|delta|={max_err} > {tol}")
     return max_err
 
 

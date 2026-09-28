@@ -85,7 +85,7 @@ it back (`qlayer.float()` ... `qlayer.half()`), and E2E-QP trains fp32 scales
 (main_e2e_qp.py casts all non-int parameters to fp32). In qpeft, scale and
 zero_point are always fp32 masters; the forward and the artifact use the base
 dtype, so `fake_quant == merge` stays exact in bf16/fp16. Block-AP also trains
-the block norms (`*.weight`, the official name filter).
+the block norms (see the README, "EfficientQAT compared to the official implementation").
 
 The warmup starts at lr 0, so the "something moved" guard checks the first
 optimizer step with lr > 0, and fails at the end if there was none.

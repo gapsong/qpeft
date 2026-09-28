@@ -10,7 +10,7 @@ import torch.nn as nn
 
 from qpeft import EfficientQATConfig, QALoraConfig, get_quant_model, param_groups, run_block_ap
 from qpeft.tuners.tuners_utils import QuantLinear
-from qpeft.utils import verify_quant_model
+from qpeft.utils import check_layer_merge_equivalence, verify_quant_model
 
 TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
@@ -117,3 +117,41 @@ def test_zero_point_is_an_integer_in_training_and_in_the_artifact():
     assert torch.equal(z, z.round()) and z.min() >= 0 and z.max() <= 2 ** 3 - 1
     with torch.no_grad():
         assert torch.equal(before, model(x)), "merge != fake_quant with a drifted zero-point"
+
+
+def test_frozen_codes_forward_rounds_the_zero_point_like_the_freeze():
+    """An fp32 model under bf16 inputs (autocast): after Block-AP the zero-point is fractional.
+    freeze_codes rounds the fp32 master; the forward must use that same integer.
+    z = 7.49 rounds to 7 in fp32, but bf16(7.49) = 7.5 would round to 8, one full quant step off."""
+    torch.manual_seed(0)
+    base = nn.Sequential(nn.Linear(128, 64))
+    model = get_quant_model(base, EfficientQATConfig(bits=4, group_size=32, phase="block_ap"))
+    layer = next(m for m in model.modules() if isinstance(m, QuantLinear))
+    with torch.no_grad():
+        layer.zero_point.fill_(7.49)                        # as Block-AP can leave it
+    model = get_quant_model(base, EfficientQATConfig(bits=4, group_size=32, phase="e2e_qp"))  # freezes
+
+    x = torch.randn(8, 128, dtype=torch.bfloat16)
+    s = layer.scale.detach().to(torch.bfloat16)
+    expected = layer.scheme.dequant(layer.codes, s, torch.full_like(s, 7.0))
+    with torch.no_grad():
+        got = layer(x)
+    assert torch.equal(got, torch.nn.functional.linear(x, expected, layer.bias.to(x.dtype))), \
+        "the bf16 forward rounded the zero-point to another integer than the frozen codes"
+
+
+def test_bf16_merge_rounds_the_zero_point_like_the_freeze():
+    """A bf16 model: freeze_codes and the forward round the fp32 master z = 7.49 to 7.
+    The merge must use the same 7, not round(bf16 7.5) = 8."""
+    torch.manual_seed(0)
+    base = nn.Sequential(nn.Linear(128, 64)).to(torch.bfloat16)
+    model = get_quant_model(base, EfficientQATConfig(bits=4, group_size=32, phase="block_ap"))
+    layer = next(m for m in model.modules() if isinstance(m, QuantLinear))
+    with torch.no_grad():
+        layer.zero_point.fill_(7.49)                        # as Block-AP can leave it
+    model = get_quant_model(base, EfficientQATConfig(bits=4, group_size=32, phase="e2e_qp"))  # freezes
+
+    check_layer_merge_equivalence(layer)
+    layer.merge()
+    assert torch.equal(layer.zero_point, torch.full_like(layer.zero_point, 7.0))
+
