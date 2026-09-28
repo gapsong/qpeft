@@ -200,12 +200,18 @@ def _prepare_model(model, quant_config) -> QuantModel:
 
 def _block_linear_names(model: nn.Module) -> list[str]:
     """The paper's default targets: every nn.Linear inside the transformer blocks
-    (q/k/v/o_proj, gate/up/down_proj, ...), not lm_head."""
+    (q/k/v/o_proj, gate/up/down_proj, ...), not lm_head. All blocks are read, not just the
+    first: in a hybrid stack some linears exist only in some blocks."""
     try:
         blocks = find_blocks(model, layer_type=nn.Linear)
     except ValueError as e:
         raise ValueError(f"{e} Pass EfficientQATConfig(target_modules=[...]) explicitly.") from None
-    return sorted({name.split(".")[-1] for name, m in blocks[0].named_modules() if isinstance(m, nn.Linear)})
+    names = set()
+    for block in blocks:
+        for name, module in block.named_modules():
+            if isinstance(module, nn.Linear):
+                names.add(name.split(".")[-1])
+    return sorted(names)
 
 
 def _check_args(args):

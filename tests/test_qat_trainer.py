@@ -87,6 +87,16 @@ def test_accepts_plain_hf_model_and_targets_block_linears(tmp_path):
     assert names == BLOCK_LINEARS                       # lm_head stays fp, as in the paper
 
 
+def test_default_targets_come_from_every_block(tmp_path):
+    """Hybrid stacks (Qwen3-Next, Jamba, dense-then-MoE) have linears that only some blocks
+    have. Taking the names from block 0 alone would leave those fp and say nothing."""
+    model = _llama()
+    model.model.layers[1].mlp.extra_proj = torch.nn.Linear(128, 128)   # only in block 1
+    trainer = _trainer(model, tmp_path, quant_config=_cfg())
+    assert set(trainer.model.config.target_modules) == BLOCK_LINEARS | {"extra_proj"}
+    assert isinstance(trainer.model.base.model.layers[1].mlp.extra_proj, QuantLinear)
+
+
 def test_default_config_is_paper_default(tmp_path):
     """No quant_config -> EfficientQATConfig() = bits 4, group_size 128."""
     from transformers import LlamaConfig, LlamaForCausalLM
