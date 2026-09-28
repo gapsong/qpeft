@@ -171,10 +171,17 @@ def _check_phase_block_ap(model):
 
 
 def _norm_weights(block):
-    """The block's `*.weight` parameters outside QuantLinear (RMSNorm, LayerNorm)."""
+    """The block's norm weights (RMSNorm, LayerNorm): every module's own `weight` parameter,
+    except in linear layers. A QuantLinear trains through its own groups, and an nn.Linear
+    that is not a target stays full precision and frozen."""
     in_quant_linear = {id(p) for m in quant_layers(block) for p in m.parameters()}
-    return [p for name, p in block.named_parameters()
-            if id(p) not in in_quant_linear and name.rsplit(".", 1)[-1] == "weight"]
+    norms = []
+    for module in block.modules():
+        weight = module._parameters.get("weight")
+        if weight is None or isinstance(module, nn.Linear) or id(weight) in in_quant_linear:
+            continue
+        norms.append(weight)
+    return norms
 
 
 def _cosine(step, total, min_lr_factor):

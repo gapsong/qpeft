@@ -78,6 +78,22 @@ def test_only_block_weights_qparams_and_norms_change():
         "the block norms should train with weight_lr, as in the official code"
 
 
+def test_linears_that_are_not_quantized_stay_frozen():
+    """With target_modules a subset, the other nn.Linear layers of a block stay full precision
+    and frozen: Block-AP trains only QuantLinear parameters and the norms."""
+    model = get_quant_model(_llama(), EfficientQATConfig(bits=2, group_size=64, target_modules=["q_proj"]))
+    before = {n: p.detach().clone() for n, p in model.named_parameters()}
+    _run(model)
+    after = dict(model.named_parameters())
+
+    untargeted = [n for n in before if ".layers." in n and "proj.weight" in n and "q_proj" not in n]
+    assert untargeted
+    for name in untargeted:
+        assert torch.equal(before[name], after[name]), f"{name} is not quantized but Block-AP trained it"
+    norms = [n for n in before if ".layers." in n and "norm" in n]
+    assert any(not torch.equal(before[n], after[n]) for n in norms), "the norms should still train"
+
+
 def test_dtypes_and_train_mode_are_restored():
     model = _qmodel(torch.bfloat16)
     model.train()
