@@ -120,3 +120,38 @@ def test_layer_gate_refuses_a_drifted_merge():
     layer.scheme.merge = lambda wq, s, z, adapter=None: (wq, s * 2, z)
     with pytest.raises(MergeMismatchError):
         check_layer_merge_equivalence(layer)
+
+
+# --- QA-LoRA dropout (official: lora_B(lora_A(lora_dropout(qa_pool(x))))) ---------
+
+def _qa_lora_layer(lora_dropout):
+    torch.manual_seed(0)
+    model = get_quant_model(nn.Sequential(nn.Linear(128, 64)),
+                            QALoraConfig(bits=4, group_size=32, r=8, lora_dropout=lora_dropout))
+    layer = next(m for m in model.modules() if isinstance(m, QuantLinear))
+    with torch.no_grad():
+        layer.adapter.B.copy_(torch.randn_like(layer.adapter.B) * 0.1)
+    return model, layer
+
+
+def test_qa_lora_dropout_is_applied_while_training_only():
+    model, layer = _qa_lora_layer(lora_dropout=0.5)
+    x = torch.randn(16, 128)
+    model.train()
+    with torch.no_grad():
+        first, second = layer.adapter(x), layer.adapter(x)
+    assert not torch.equal(first, second), "lora_dropout=0.5 is set but the adapter ignores it"
+    model.eval()
+    _, plain = _qa_lora_layer(lora_dropout=0.0)
+    with torch.no_grad():
+        assert torch.equal(layer.adapter(x), plain.adapter(x)), "dropout must be off in eval"
+
+
+def test_merge_gate_ignores_dropout_in_train_mode():
+    """The gate compares the layer with its merged copy; with dropout active the training
+    forward is random, so the gate must compare in eval mode and restore the mode."""
+    from qpeft import check_layer_merge_equivalence
+    model, layer = _qa_lora_layer(lora_dropout=0.5)
+    model.train()
+    check_layer_merge_equivalence(layer)
+    assert layer.training, "the gate must leave the layer in the mode it found it in"

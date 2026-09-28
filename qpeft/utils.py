@@ -47,6 +47,16 @@ def check_layer_merge_equivalence(layer, x=None) -> float:
     including codes frozen at a phase switch while the scale kept training."""
     if layer.merged:
         return 0.0
+    # eval: dropout would make the training forward random. The mode is restored below.
+    was_training = layer.training
+    layer.eval()
+    try:
+        return _compare_with_merged_copy(layer, x)
+    finally:
+        layer.train(was_training)
+
+
+def _compare_with_merged_copy(layer, x):
     if x is None:
         in_features = layer.scale.shape[-1] * layer.config.group_size
         x = torch.randn(4, in_features, dtype=layer.compute_dtype, device=layer.scale.device)
