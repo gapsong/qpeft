@@ -43,10 +43,44 @@ def test_target_modules_none_targets_all_linears():
 
 
 def test_injection_count():
-    cfg = EfficientQATConfig(bits=4, group_size=64, target_modules=["proj"])
+    cfg = EfficientQATConfig(bits=4, group_size=64, target_modules=r".*_proj")
     model = get_quant_model(Attn(), cfg)
     n_quant = sum(isinstance(m, QuantLinear) for m in model.modules())
     assert n_quant == 4                          # q/k/v/o_proj, not mlp
+
+
+# --- target matching as in peft (check_target_module_exists) ------------------------
+
+class FusedAttn(nn.Module):
+    """Phi-3 style: a fused qkv_proj next to a plain v_proj, one level down."""
+    def __init__(self):
+        super().__init__()
+        self.self_attn = nn.Module()
+        self.self_attn.qkv_proj = nn.Linear(128, 384, bias=False)
+        self.self_attn.v_proj = nn.Linear(128, 128, bias=False)
+        self.gate_up_proj = nn.Linear(128, 256, bias=False)
+        self.up_proj = nn.Linear(128, 128, bias=False)
+
+
+def _quantized_names(model):
+    return {n.removeprefix("base.") for n, m in model.named_modules() if isinstance(m, QuantLinear)}
+
+
+def test_a_list_matches_whole_names_not_substrings():
+    """peft: a list entry matches the full module name or its last dotted parts.
+    'v_proj' must not also hit 'qkv_proj', nor 'up_proj' hit 'gate_up_proj'."""
+    cfg = EfficientQATConfig(bits=4, group_size=64, target_modules=["v_proj", "up_proj"])
+    assert _quantized_names(get_quant_model(FusedAttn(), cfg)) == {"self_attn.v_proj", "up_proj"}
+
+
+def test_a_list_entry_can_be_a_dotted_suffix():
+    cfg = EfficientQATConfig(bits=4, group_size=64, target_modules=["self_attn.qkv_proj"])
+    assert _quantized_names(get_quant_model(FusedAttn(), cfg)) == {"self_attn.qkv_proj"}
+
+
+def test_a_string_is_a_regex_on_the_full_name():
+    cfg = EfficientQATConfig(bits=4, group_size=64, target_modules=r"self_attn\..*")
+    assert _quantized_names(get_quant_model(FusedAttn(), cfg)) == {"self_attn.qkv_proj", "self_attn.v_proj"}
 
 
 def test_non_divisible_group_size_raises():

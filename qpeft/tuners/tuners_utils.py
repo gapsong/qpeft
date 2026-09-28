@@ -3,6 +3,7 @@ Same roles as peft/tuners/tuners_utils.py (BaseTuner) and peft's lora.Linear."""
 from __future__ import annotations
 
 import dataclasses
+import re
 from typing import Optional
 
 import torch
@@ -242,9 +243,19 @@ class BaseQuantTuner:
         raise NotImplementedError("each method's model builds its own QuantLinear")
 
     def _is_target(self, name, module):
+        """Which nn.Linear to quantize, matched as peft's check_target_module_exists does:
+            None   every nn.Linear
+            str    a regex that must match the full module name
+            list   an entry is the full name or its last dotted part(s):
+                   "v_proj" matches "model.layers.0.self_attn.v_proj", not "qkv_proj"."""
         if not isinstance(module, nn.Linear):
             return False
-        return self.config.target_modules is None or any(t in name for t in self.config.target_modules)
+        targets = self.config.target_modules
+        if targets is None:
+            return True
+        if isinstance(targets, str):
+            return re.fullmatch(targets, name) is not None
+        return name in targets or any(name.endswith("." + target) for target in targets)
 
     def _freeze_everything_else(self):
         """Embeddings, norms, lm_head, ... do not train; only the QuantLinear parameters

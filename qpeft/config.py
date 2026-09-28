@@ -6,7 +6,7 @@ import json
 import os
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
+from typing import Optional, Union
 
 CONFIG_NAME = "qpeft_config.json"
 
@@ -31,7 +31,7 @@ class QuantTuningConfig:
     group_size: int = 64
     qat_scheme: str = "int_uniform"
     backend: str = "auto"
-    target_modules: Optional[list[str]] = None
+    target_modules: Optional[Union[list[str], str]] = None   # as in peft, see BaseQuantTuner._is_target
     task_type: Optional[str] = None
     init_weights: str = "rtn"
     trainable_params: tuple[TrainableParams, ...] = (TrainableParams.SCALE,)
