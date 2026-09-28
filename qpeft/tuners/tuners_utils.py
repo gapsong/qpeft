@@ -122,7 +122,7 @@ class QuantLinear(nn.Module):
         if self.merged:
             return
         dtype = self.compute_dtype
-        scale, zero_point = self.scale.data.to(dtype), self.zero_point.data.to(dtype)
+        scale, zero_point = self.scale.data.to(dtype), self._zero_point_used().detach().to(dtype)
         codes = self.codes if self.codes_frozen else self.scheme.quantize(self.weight.data.to(dtype), scale, zero_point)
         codes, scale, zero_point = self.scheme.merge(codes, scale, zero_point, self.adapter)
         # Checked before anything changes, so a refused merge leaves the layer as it was.
