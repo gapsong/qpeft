@@ -5,7 +5,9 @@ from .quant_schemes import (
 )
 from .mapping import get_quant_model
 from .peft_model import QuantModel
-from .utils import check_layer_merge_equivalence, check_merge_equivalence, verify_quant_model
+from .utils import (
+    MergeMismatchError, check_layer_merge_equivalence, check_merge_equivalence, verify_quant_model,
+)
 from .training import param_groups
 from .block_ap import run_block_ap
 from .tuners.efficient_qat import EfficientQATConfig, EfficientQATModel, efficient_qat_schedule
@@ -16,7 +18,7 @@ __version__ = "0.0.1"
 __all__ = [
     "QuantTuningConfig", "QuantTuningType", "TrainableParams",
     "FakeQuantizeConfig", "QuantScheme", "UnsupportedSchemeError", "build_scheme", "register_scheme",
-    "get_quant_model", "QuantModel", "check_merge_equivalence",
+    "get_quant_model", "QuantModel", "MergeMismatchError", "check_merge_equivalence",
     "check_layer_merge_equivalence", "verify_quant_model", "param_groups", "run_block_ap",
     "EfficientQATConfig", "EfficientQATModel", "efficient_qat_schedule",
     "PEQAConfig", "PEQAModel",
