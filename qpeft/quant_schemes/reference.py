@@ -44,4 +44,7 @@ class ReferenceIntUniformScheme(_IntUniformScheme):
         s_full, z_full = self._expand(s, w.shape[-1]), self._expand(z, w.shape[-1])
         q = w / s_full
         q = _ste(q.round(), q) + z_full
-        return torch.clamp(q, self.qmin, self.qmax), s_full, z_full
+        # Not torch.clamp: since torch 2.14 its gradient is 0 on the bounds themselves, and the
+        # RTN init puts every group's min and max exactly on code 0 and code qmax.
+        clamped = (q < self.qmin) | (q > self.qmax)
+        return torch.where(clamped, q.clamp(self.qmin, self.qmax).detach(), q), s_full, z_full
