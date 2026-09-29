@@ -173,9 +173,11 @@ def test_autocast_to_the_input_dtype_uses_the_kernel(kernel_calls):
 
 
 def test_autocast_to_another_dtype_takes_the_torch_path(kernel_calls):
+    """bf16 input under fp16 autocast: a dtype the kernel supports, so only the autocast check
+    can send it to the torch path."""
     _, layer = make_layer("peqa", 4, 64, 256, 129, torch.bfloat16)
-    x = make_input((2, 7), 256, torch.float32)
-    with torch.autocast("cuda", dtype=torch.bfloat16):
+    x = make_input((2, 7), 256, torch.bfloat16)
+    with torch.autocast("cuda", dtype=torch.float16):
         layer(x)
     assert not kernel_calls
 
