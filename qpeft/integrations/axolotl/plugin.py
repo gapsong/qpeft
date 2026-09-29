@@ -18,6 +18,7 @@ and written with QuantModel.save_pretrained to <output_dir>/qpeft.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from axolotl.integrations.base import AdapterCapabilities, BasePlugin
@@ -58,6 +59,9 @@ class QpeftPlugin(BasePlugin):
             return None, None
         quant_config = quant_config_from(cfg, model)
         self.quant_model = get_quant_model(model, quant_config)
+        if not self.quant_model.quant_layers():
+            raise ValueError(f"adapter: qpeft quantized no layer: target_modules "
+                             f"{quant_config.target_modules!r} matched nothing.")
         n_layers = len(self.quant_model.quant_layers())
         LOG.info(f"qpeft: {quant_config.quant_tuning_type.value} on {n_layers} linears, "
                  f"bits={quant_config.bits} group_size={quant_config.group_size}")
@@ -86,6 +90,8 @@ def check_supported(cfg):
                          "remove load_in_4bit / load_in_8bit / gptq.")
     if cfg.fsdp_config or cfg.fsdp or cfg.deepspeed:
         raise ValueError("adapter: qpeft is not tested with FSDP or DeepSpeed yet; train on one GPU.")
+    if int(os.environ.get("WORLD_SIZE", "1")) > 1:
+        raise ValueError("adapter: qpeft is not tested on multiple GPUs yet; train on one GPU.")
     if cfg.relora:
         raise ValueError("adapter: qpeft does not support ReLoRA.")
     if cfg.lora_modules_to_save:

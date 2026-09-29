@@ -84,12 +84,22 @@ def test_config_only_touches_nothing(tmp_path):
     (dict(lora_modules_to_save=["embed_tokens"]), "lora_modules_to_save"),
     (dict(qpeft={"method": "peqa"}, weight_decay=0.01), "weight_decay"),
     (dict(lora_target_linear=None, lora_target_modules=None), "lora_target_modules"),
-], ids=["4bit", "gptq", "deepspeed", "fsdp", "relora", "modules_to_save", "peqa_weight_decay", "no_targets"])
-def test_unsupported_settings_are_refused(tmp_path, kw, match):
+    (dict(world_size="2"), "multiple GPUs"),
+], ids=["4bit", "gptq", "deepspeed", "fsdp", "relora", "modules_to_save", "peqa_weight_decay", "no_targets",
+        "multi_gpu"])
+def test_unsupported_settings_are_refused(tmp_path, monkeypatch, kw, match):
+    kw = dict(kw)
+    if "world_size" in kw:
+        monkeypatch.setenv("WORLD_SIZE", kw.pop("world_size"))
     model = _llama()
     with pytest.raises(ValueError, match=match):
         QpeftPlugin().load_adapter(model, _cfg(tmp_path, **kw))
     assert not _quantized_leaf_names(model), "a refused config must not change the model"
+
+
+def test_targets_that_match_nothing_are_refused(tmp_path):
+    with pytest.raises(ValueError, match="matched nothing"):
+        QpeftPlugin().load_adapter(_llama(), _cfg(tmp_path, lora_target_linear=None, lora_target_modules=["q_prj"]))
 
 
 def test_a_scheme_refusal_reaches_the_user(tmp_path):
