@@ -171,6 +171,7 @@ optimizer: adamw_torch
 bf16: true
 save_strategy: "no"
 output_dir: {tmp_path / "out"}
+dataset_prepared_path: {tmp_path / "prepared"}
 """)
     run = subprocess.run([sys.executable, "-m", "axolotl.cli.train", str(config)],
                          capture_output=True, text=True, timeout=900)
