@@ -100,6 +100,19 @@ def find_blocks(model: nn.Module, layer_type: type = QuantLinear) -> nn.ModuleLi
     return max(candidates, key=len)
 
 
+def block_linear_names(model: nn.Module) -> list[str]:
+    """The paper's default targets: the names of every nn.Linear inside the transformer blocks
+    (q/k/v/o_proj, gate/up/down_proj, ...), not lm_head. All blocks are read, not just the
+    first: in a hybrid stack some linears exist only in some blocks."""
+    blocks = find_blocks(model, layer_type=nn.Linear)
+    names = set()
+    for block in blocks:
+        for name, module in block.named_modules():
+            if isinstance(module, nn.Linear):
+                names.add(name.split(".")[-1])
+    return sorted(names)
+
+
 @dataclass
 class _BlockExtras:
     """What a block gets besides the hidden states: in HF, the attention mask, the rotary

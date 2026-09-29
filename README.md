@@ -263,6 +263,7 @@ qpeft/
     efficient_qat/{config,model,layer}.py
     qa_lora/{config,model,layer,torchao}.py
     peqa/{config,model}.py
+  integrations/axolotl/ # QpeftPlugin: QA-LoRA and PEQA in axolotl         (needs .[axolotl])
 examples/              # quickstart, train_efficient_qat, train_qa_lora, hf_injection, qat_trainer
 benchmarks/            # peqa_vs_official: PEQA against the official EfficientQAT code, and PEQA vs EfficientQAT
 tests/                 # merge equivalence, backends, injection, config, save/load, phases, precision, trainer, PEQA, tinygemm, Triton kernel
@@ -323,6 +324,27 @@ It is the same mechanics as EfficientQAT's E2E-QP, without Block-AP before it.
 There is no official PEQA code, so `tests/test_peqa.py` checks it against the paper's equations.
 Two differences to the paper: qpeft is group-wise only (the paper's main results are per-channel), and qpeft clamps the scale to `[1e-4, 1e4]`.
 QA-LoRA runs with `get_quant_model` and your own loop or a plain HF `Trainer`; `param_groups` builds the optimizer groups.
+
+### Use with axolotl
+
+`pip install -e ".[axolotl]"` (axolotl >= 0.19, Python >= 3.12) adds an axolotl plugin for QA-LoRA and PEQA:
+
+```yaml
+plugins:
+  - qpeft.integrations.axolotl.QpeftPlugin
+adapter: qpeft
+qpeft:
+  method: qa_lora            # or peqa
+  bits: 4
+  group_size: 64
+lora_r: 16                   # QA-LoRA reads the usual LoRA fields
+lora_alpha: 32
+lora_target_linear: true     # every linear of the decoder blocks, not lm_head
+```
+
+The base model loads in full precision (no `load_in_4bit`): qpeft quantizes the targeted linears itself.
+After training, the plugin checks `fake_quant == merge` on every layer, merges, and writes the integer artifact to `<output_dir>/qpeft`.
+Multi-GPU runs (FSDP, DeepSpeed, DDP) and ReLoRA are refused for now.
 
 Save and load: only a merged model can be saved, as the integer artifact.
 

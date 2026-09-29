@@ -24,7 +24,7 @@ from torch import nn
 from transformers import Trainer, TrainerCallback, TrainingArguments
 from transformers.utils import can_return_loss, find_labels
 
-from .block_ap import find_blocks, run_block_ap
+from .block_ap import block_linear_names, run_block_ap
 from .mapping import get_quant_model
 from .peft_model import QuantModel
 from .quant_schemes import UnsupportedSchemeError
@@ -195,7 +195,11 @@ def _prepare_model(model, quant_config) -> QuantModel:
             raise UnsupportedSchemeError(
                 f"QATTrainer only supports EfficientQATConfig, got {type(config).__name__}. Refusing.")
         if config.target_modules is None:
-            config = dataclasses.replace(config, target_modules=_block_linear_names(model))
+            try:
+                targets = block_linear_names(model)
+            except ValueError as e:
+                raise ValueError(f"{e} Pass EfficientQATConfig(target_modules=[...]) explicitly.") from None
+            config = dataclasses.replace(config, target_modules=targets)
         model = get_quant_model(model, config)
     else:
         raise TypeError(f"QATTrainer needs a model, got {type(model).__name__}.")
@@ -209,22 +213,6 @@ def _prepare_model(model, quant_config) -> QuantModel:
     if any(m.merged for m in model.quant_layers()):
         raise ValueError("model is merged (an int artifact) and cannot be trained.")
     return model
-
-
-def _block_linear_names(model: nn.Module) -> list[str]:
-    """The paper's default targets: every nn.Linear inside the transformer blocks
-    (q/k/v/o_proj, gate/up/down_proj, ...), not lm_head. All blocks are read, not just the
-    first: in a hybrid stack some linears exist only in some blocks."""
-    try:
-        blocks = find_blocks(model, layer_type=nn.Linear)
-    except ValueError as e:
-        raise ValueError(f"{e} Pass EfficientQATConfig(target_modules=[...]) explicitly.") from None
-    names = set()
-    for block in blocks:
-        for name, module in block.named_modules():
-            if isinstance(module, nn.Linear):
-                names.add(name.split(".")[-1])
-    return sorted(names)
 
 
 def _check_args(args):
