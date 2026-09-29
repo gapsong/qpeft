@@ -343,7 +343,7 @@ lora_target_linear: true     # every linear of the decoder blocks, not lm_head
 
 The base model loads in full precision (no `load_in_4bit`): qpeft quantizes the targeted linears itself.
 After training, the plugin checks `fake_quant == merge` on every layer, merges, and writes the integer artifact to `<output_dir>/qpeft`.
-FSDP, DeepSpeed and ReLoRA are refused for now.
+Multi-GPU runs (FSDP, DeepSpeed, DDP) and ReLoRA are refused for now.
 
 Save and load: only a merged model can be saved, as the integer artifact.
 
