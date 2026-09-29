@@ -61,15 +61,29 @@ Layer by layer, the kernel is bit-identical to the torch path (`tests/test_trito
 
 To see whether QA-LoRA just needs a larger lr, two more runs (`qpeft_qa_lora_lr1e-3.yml`, `qpeft_qa_lora_lr2e-3.yml`):
 
-| lr | final loss | plugin at the end |
+| lr | final loss | plugin at the end (max delta of the first failing layer) |
 |---|---|---|
 | 2e-4 | 2.889 | merge check OK, artifact saved |
 | 1e-3 | 2.667 | `MergeMismatchError`: max delta 0.375 > tolerance 0.348, nothing saved |
 | 2e-3 | 2.619 | `MergeMismatchError`: max delta 0.0625 > tolerance 0.053, nothing saved |
 | 2e-3, torch path | 2.619 | `MergeMismatchError`: max delta 0.25 > tolerance 0.221, nothing saved |
 
-With a higher lr QA-LoRA's loss comes close to QLoRA's (2.62 against 2.59), but the merged bf16 model then differs from the trained one by more than the 1 % tolerance, so the plugin refuses to write it.
+With a higher lr QA-LoRA's loss comes close to QLoRA's (2.62 against 2.59), but the merged bf16 model then differs from the trained one by more than the tolerance (1 % of the largest output), so the plugin refuses to write it.
 It fails on the torch path too, so it is not the kernel.
-The cause is the known bf16 fold: the merged zero-point `z' = z - delta / s` is stored in the model dtype (bf16), and with a larger adapter the rounding of `z'` grows.
-Keeping `z'` in fp32 would change the save format (`docs/specs/save_load.md`); that is the owner's decision, so it is not changed here.
+The max delta is the first failing layer's.
+
+It is **not mainly** the bf16 storage of the folded zero-point `z' = z - delta / s`. `merge_check_isolation.py` builds one bf16 QA-LoRA layer (960 x 960, g64, r16) with a growing adapter and compares the training forward with the merged output (max delta, seed 0):
+
+| adapter weights (std of A and B) | tolerance | trained vs merged, z' bf16 | trained vs merged, z' fp32 | trained vs exact fp32 | merged (z' fp32) vs exact |
+|---|---|---|---|---|---|
+| 0.05 | 0.021 | 0.0117 | 0.0078 | 0.0093 | 0.0080 |
+| 0.2 | 0.034 | 0.0234 | 0.0156 | 0.0176 | 0.0081 |
+| 0.4 | 0.086 | 0.0625 | 0.0625 | 0.0446 | 0.0456 |
+| 0.8 | 0.413 | 0.2500 | 0.1875 | 0.1980 | 0.0936 |
+
+Keeping `z'` in fp32 makes the mismatch a bit smaller at some sizes (0.25 -> 0.19) and not at all at others (0.0625 both).
+The training forward itself is about as far from the exact result as trained and merged are from each other: it computes the adapter branch and the sum in bf16.
+The merged model with z' in fp32 is closer to the exact result than the training forward at most sizes (0.4: about equal).
+The failing deltas are one to two bf16 rounding steps of the largest outputs (a bf16 step is 0.125 between 16 and 32, 0.25 between 32 and 64), and the tolerance of 1 % of the largest output is only about 2.5 steps.
+So the check refuses rounding noise once the adapter makes the outputs large; how to change the check (compare both sides to an fp32 reference, count bf16 steps, or run the adapter branch in fp32) is the owner's decision and not changed here.
 The refusal also discards the trained adapter: the plugin checks before it saves anything.
