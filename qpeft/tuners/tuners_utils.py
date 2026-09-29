@@ -42,7 +42,12 @@ class QuantLinear(nn.Module):
     half-precision training forward and its merged artifact see the same numbers.
 
     Packed codes use the GPTQ layout (qpeft/packing.py). scale and zero_point stay separate
-    float tensors, so a zero_point made fractional by an adapter fold is stored exactly."""
+    float tensors, so a zero_point made fractional by an adapter fold is stored exactly.
+
+    On CUDA, codes-frozen and merged layers run on a Triton kernel (qpeft/kernels/dequant.py)
+    that gives bit-identical numbers; set `use_triton_kernel = False` for the torch path."""
+
+    use_triton_kernel = True
 
     def __init__(self, base: nn.Linear, scheme: QuantScheme,
                  config: QuantTuningConfig, adapter: Optional[nn.Module] = None):
@@ -77,10 +82,29 @@ class QuantLinear(nn.Module):
         return unpack_codes(self.qweight, self.config.bits, self.in_features)
 
     def forward(self, x):
-        y = F.linear(x, self._weight_in(x.dtype), None if self.bias is None else self.bias.to(x.dtype))
+        bias = None if self.bias is None else self.bias.to(x.dtype)
+        if self.use_triton_kernel and self._kernel_supports(x):
+            y = self._frozen_codes_linear(x, bias)
+        else:
+            y = F.linear(x, self._weight_in(x.dtype), bias)
         if self.adapter is not None:
             y = y + self.adapter(x)
         return y
+
+    def _kernel_supports(self, x):
+        # Imported here, not at the top: qpeft.kernels imports this module (tinygemm).
+        from ..kernels.dequant import kernel_supports
+        return kernel_supports(self, x)
+
+    def _frozen_codes_linear(self, x, bias):
+        """The codes-frozen / merged forward on the Triton kernel: the same numbers as
+        F.linear(x, self._weight_in(x.dtype), bias), without keeping the dense weight."""
+        from ..kernels.dequant import FrozenCodesLinear
+        dtype = x.dtype
+        scale = self.scheme.clamp_scale(self.scale.to(dtype))
+        zero_point = self.zero_point.to(dtype) if self.merged else self._zero_point_used().to(dtype)
+        return FrozenCodesLinear.apply(x, self.qweight, scale, zero_point, bias,
+                                       self.config.bits, self.config.group_size)
 
     def _weight_in(self, dtype):
         """The weight this layer computes with, in the input's dtype."""
