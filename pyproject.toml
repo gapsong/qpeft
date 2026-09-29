@@ -10,6 +10,7 @@ dependencies = ["torch>=2.4"]
 [project.optional-dependencies]
 torchao = ["torchao>=0.7"]           # real schemes/kernels bind to torchao
 train = ["transformers>=5.7,<6", "accelerate>=0.26"]   # trainer.py uses Trainer internals; verified on 5.7
+axolotl = ["axolotl>=0.19; python_version >= '3.12'"]    # qpeft.integrations.axolotl; verified on axolotl 0.19
 dev = ["pytest>=8", "transformers>=5.7,<6", "accelerate>=0.26", "datasets>=2.14"]  # datasets: examples/qat_trainer.py
 
 [build-system]
