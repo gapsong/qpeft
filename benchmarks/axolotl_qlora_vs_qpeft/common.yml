@@ -1,0 +1,28 @@
+# Shared by all arms; make_config.py adds one arm (qlora.yml or qpeft_qa_lora.yml) and the paths.
+base_model: HuggingFaceTB/SmolLM2-360M
+plugins:
+  - measure_plugin.MeasurePlugin
+datasets:
+  - path: set by make_config.py
+    ds_type: json
+dataset_prepared_path: set by make_config.py
+val_set_size: 0
+sequence_len: 512
+sample_packing: false
+micro_batch_size: 8
+gradient_accumulation_steps: 1
+max_steps: 300
+learning_rate: 0.0002
+optimizer: adamw_torch
+lr_scheduler: cosine
+warmup_steps: 10
+weight_decay: 0.0
+bf16: true
+seed: 0
+logging_steps: 10
+save_strategy: "no"
+output_dir: set by make_config.py
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+lora_target_linear: true

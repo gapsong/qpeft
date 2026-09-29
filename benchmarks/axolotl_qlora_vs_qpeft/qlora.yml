@@ -1,0 +1,3 @@
+# axolotl QLoRA: bitsandbytes NF4 base (blocksize 64, double quant), LoRA in bf16.
+adapter: qlora
+load_in_4bit: true

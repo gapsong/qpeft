@@ -1,0 +1,9 @@
+# qpeft QA-LoRA through the plugin: 4-bit integer codes, group size 64, merge stays int.
+plugins:
+  - measure_plugin.MeasurePlugin
+  - qpeft.integrations.axolotl.QpeftPlugin
+adapter: qpeft
+qpeft:
+  method: qa_lora
+  bits: 4
+  group_size: 64

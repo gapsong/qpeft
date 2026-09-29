@@ -1,0 +1,11 @@
+# qpeft QA-LoRA with 10x the learning rate: the group-averaged adapter input is small, so its
+# gradients are small (grad norm ~0.002 vs QLoRA's ~0.15 at the same lr).
+plugins:
+  - measure_plugin.MeasurePlugin
+  - qpeft.integrations.axolotl.QpeftPlugin
+adapter: qpeft
+qpeft:
+  method: qa_lora
+  bits: 4
+  group_size: 64
+learning_rate: 0.002
