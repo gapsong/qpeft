@@ -59,11 +59,11 @@ class QpeftPlugin(BasePlugin):
             return None, None
         quant_config = quant_config_from(cfg, model)
         self.quant_model = get_quant_model(model, quant_config)
-        if not self.quant_model.quant_layers():
+        layers = self.quant_model.quant_layers()
+        if not layers:
             raise ValueError(f"adapter: qpeft quantized no layer: target_modules "
                              f"{quant_config.target_modules!r} matched nothing.")
-        n_layers = len(self.quant_model.quant_layers())
-        LOG.info(f"qpeft: {quant_config.quant_tuning_type.value} on {n_layers} linears, "
+        LOG.info(f"qpeft: {quant_config.quant_tuning_type.value} on {len(layers)} linears, "
                  f"bits={quant_config.bits} group_size={quant_config.group_size}")
         return model, None
 
