@@ -251,6 +251,7 @@ qpeft/
     registry.py        # qat_scheme -> scheme, build_scheme
   packing.py           # pack_codes / unpack_codes: codes in the GPTQ qweight layout
   kernels/tinygemm.py  # to_tinygemm: run a merged 4-bit model on the int4 tinygemm kernel (CUDA)
+  kernels/dequant.py   # Triton kernel for training on frozen codes (CUDA), bit-identical to the torch path
   mapping.py           # get_quant_model + registries                         (~ get_peft_model)
   peft_model.py        # QuantModel.merge_and_unload()                        (~ PeftModel)
   utils.py             # check_merge_equivalence, verify_quant_model          (the spine test)
@@ -264,7 +265,7 @@ qpeft/
     peqa/{config,model}.py
 examples/              # quickstart, train_efficient_qat, train_qa_lora, hf_injection, qat_trainer
 benchmarks/            # peqa_vs_official: PEQA against the official EfficientQAT code, and PEQA vs EfficientQAT
-tests/                 # merge equivalence, backends, injection, config, save/load, phases, precision, trainer, PEQA, tinygemm
+tests/                 # merge equivalence, backends, injection, config, save/load, phases, precision, trainer, PEQA, tinygemm, Triton kernel
 pyproject.toml
 ```
 
@@ -365,6 +366,7 @@ model = get_quant_model(hf, EfficientQATConfig(
 
 The `int_uniform` contract is implemented against two backends, and both are green at the same gate (`check_merge_equivalence`: EfficientQAT is exact, also in bf16; the QA-LoRA fold is < 1e-4 in fp32 and within 1e-2 relative in half precision, where the fold itself is computed in half).
 `backend="auto"` selects the pure-torch `ReferenceIntUniformScheme`, which is always available.
+On CUDA, layers with frozen codes (QA-LoRA, PEQA, E2E-QP) and merged layers run on a Triton kernel that unpacks the codes and recomputes the dense weight in backward instead of keeping it; its output and gradients are bit-identical to the torch path (2, 4 and 8 bits; 3 bits stay on torch).
 `backend="torchao"` selects `TorchaoIntUniformScheme`, built on torchao's stable `quant_primitives` and imported lazily so torchao stays optional.
 `examples/train_*.py` show real training plus an integer merge, `examples/hf_injection.py` shows injection into a Hugging Face model, and `examples/qat_trainer.py` runs both EfficientQAT phases on Qwen3-0.6B.
 The test suite (`pytest`, plus `QPEFT_RUN_SLOW=1` for the tests that download a model) covers merge equivalence, both backends, injection, initialization, config, save/load, the EfficientQAT phases, PEQA against its paper, half precision, the trainer and the tinygemm export.
