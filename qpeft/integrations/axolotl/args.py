@@ -28,7 +28,8 @@ _REFUSED_SETTINGS = {
     "load_in_8bit": _PREQUANTIZED,
     "gptq": _PREQUANTIZED,
     "relora": "ReLoRA merges LoRA into float weights during training.",
-    "merge_lora": "qpeft merges into the integer model itself after training (see qpeft.export).",
+    "merge_lora": ("qpeft merges into the integer model itself after training "
+                   "(see the `export` key of the block)."),
     "qat": "axolotl's QAT would fake-quantize a second time, on top of qpeft.",
 }
 _PARALLEL_SIZES = ("tensor_parallel_size", "context_parallel_size", "sequence_parallel_degree",
