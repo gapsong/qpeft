@@ -43,8 +43,8 @@ class QuantTuningConfig:
     @classmethod
     def from_dict(cls, d: dict) -> "QuantTuningConfig":
         """Build the right subclass (from quant_tuning_type). Unknown types or fields are refused,
-        e.g. a config written by a newer qpeft. trainable_params is not read: each method
-        derives it from its own fields."""
+        e.g. a field of another method or a config written by a newer qpeft. trainable_params
+        is not read: each method derives it from its own fields."""
         from .mapping import QUANT_TUNING_TYPE_TO_CONFIG_MAPPING
         from .quant_schemes import UnsupportedSchemeError
         d = dict(d)
@@ -61,8 +61,8 @@ class QuantTuningConfig:
         unknown = sorted(set(d) - {f.name for f in dataclasses.fields(target) if f.init})
         if unknown:
             raise UnsupportedSchemeError(
-                f"saved config has fields {target.__name__} does not know: {unknown} "
-                f"(written by a newer qpeft?). Refusing.")
+                f"config has fields {target.__name__} does not know: {unknown} "
+                f"(a field of another method, or written by a newer qpeft?). Refusing.")
         return target(**d)
 
     def save_pretrained(self, save_directory) -> None:
