@@ -284,21 +284,24 @@ def test_a_step_skipped_by_the_fp16_grad_scaler_is_not_a_dead_run(tmp_path, monk
         return real_step(self, *args, **kwargs)
 
     monkeypatch.setattr(torch.optim.AdamW, "step", step_skipping_the_first)
-    monkeypatch.setattr(type(trainer.accelerator), "optimizer_step_was_skipped",
-                        property(lambda self: steps["n"] == 1))
+    from accelerate.optimizer import AcceleratedOptimizer
+    monkeypatch.setattr(AcceleratedOptimizer, "step_was_skipped", property(lambda self: steps["n"] == 1))
     trainer.train()                                       # must not raise
 
 # --- Block-AP calibration batches ---------------------------------------------------
 
-def test_block_ap_batches_hold_exactly_block_ap_train_size_rows(tmp_path):
-    """16 samples in loader batches of 3 (3,3,3,3,3,1), re-split to 2 rows each.
-    The uneven tail of a loader batch must not be counted as a full Block-AP batch."""
+def test_block_ap_runs_on_the_batches_the_args_ask_for(tmp_path, monkeypatch):
+    """block_ap_train_size, block_ap_batch_size and block_ap_seqlen reach the calibration
+    batches (the batch builder itself: tests/test_hf_trainer.py)."""
+    import qpeft.trainer as T
     trainer = _trainer(_llama(), tmp_path, quant_config=_cfg(), per_device_train_batch_size=3,
-                       block_ap_batch_size=2, block_ap_train_size=5)
-    batches = trainer._block_ap_batches()
-    assert sum(b["input_ids"].shape[0] for b in batches) == 5
-    assert all(b["input_ids"].shape[0] <= 2 for b in batches)
-    assert all("labels" not in b for b in batches)
+                       block_ap_batch_size=2, block_ap_train_size=5, block_ap_seqlen=16)
+    seen = {}
+    monkeypatch.setattr(T, "run_block_ap", lambda model, batches, **kw: seen.update(batches=batches))
+    trainer._run_block_ap()
+    rows = [b["input_ids"].shape for b in seen["batches"]]
+    assert sum(r[0] for r in rows) == 5
+    assert all(r[0] <= 2 and r[1] == 16 for r in rows)
 
 
 # --- Trainer integration: checkpointing, KV cache, saving, imports ---------------------

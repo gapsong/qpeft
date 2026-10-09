@@ -257,6 +257,7 @@ qpeft/
   training.py          # param_groups: one optimizer group per parameter kind
   block_ap.py          # run_block_ap: EfficientQAT phase 1
   trainer.py           # QATTrainer, QATTrainingArguments                     (needs .[train])
+  hf_trainer.py        # block_ap_batches, FirstStepMustMoveParams: for any HF Trainer (needs .[train])
   tuners/
     tuners_utils.py    # BaseQuantTuner, QuantLinear                          (~ BaseTuner / lora.Linear)
     efficient_qat/{config,model,layer}.py
