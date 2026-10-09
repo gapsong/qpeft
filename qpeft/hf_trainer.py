@@ -50,6 +50,7 @@ class FirstStepMustMoveParams(TrainerCallback):
     def __init__(self):
         self.snapshot = None        # trainable params before the first lr > 0 step; None once checked
         self.checking = False
+        self.scale_before = None    # the fp16 GradScaler's scale before the step being checked
 
     def on_train_begin(self, args, state, control, model=None, **kw):
         self.snapshot = {n: p.detach().clone() for n, p in model.named_parameters() if p.requires_grad}
@@ -57,13 +58,16 @@ class FirstStepMustMoveParams(TrainerCallback):
     def on_step_begin(self, args, state, control, optimizer=None, **kw):
         # The lr the coming optimizer step will use (the scheduler steps after it).
         self.checking = self.snapshot is not None and any(g["lr"] > 0 for g in optimizer.param_groups)
+        if self.checking:
+            self.scale_before = _grad_scale(optimizer)
 
     def on_step_end(self, args, state, control, model=None, optimizer=None, **kw):
         if not self.checking:
             return
-        # Set by accelerate's optimizer wrapper, which the Trainer always uses.
-        if getattr(optimizer, "step_was_skipped", False):
-            return          # the fp16 GradScaler skipped this step (overflow); check the next one
+        # The fp16 GradScaler halves its scale exactly when it skips a step (overflow); check the next one.
+        # Not accelerate's step_was_skipped: a fused optimizer (HF's default AdamW) never sets it.
+        if _grad_scale(optimizer) < self.scale_before:
+            return
         moved = any(not torch.equal(p, self.snapshot[n])
                     for n, p in model.named_parameters() if n in self.snapshot)
         self.snapshot, self.checking = None, False
@@ -73,3 +77,9 @@ class FirstStepMustMoveParams(TrainerCallback):
     def on_train_end(self, args, state, control, **kw):
         if self.snapshot is not None:
             raise RuntimeError(f"training ended without an optimizer step at lr > 0 -- {self.HINT}")
+
+
+def _grad_scale(optimizer):
+    """The scale of the fp16 GradScaler on accelerate's optimizer wrapper; 1.0 without one."""
+    scaler = getattr(optimizer, "scaler", None)
+    return scaler.get_scale() if scaler is not None else 1.0

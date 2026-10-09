@@ -89,8 +89,16 @@ def _step(callback, model, optimizer, move):
     callback.on_step_end(None, None, None, model=model, optimizer=optimizer)
 
 
-def _optimizer(lr, skipped=False):
-    return SimpleNamespace(param_groups=[{"lr": lr}], step_was_skipped=skipped)
+def _optimizer(lr, scaler=None):
+    return SimpleNamespace(param_groups=[{"lr": lr}], scaler=scaler)
+
+
+class _GradScaler:
+    def __init__(self):
+        self.scale = 65536.0
+
+    def get_scale(self):
+        return self.scale
 
 
 def test_first_step_that_moves_passes():
@@ -125,10 +133,21 @@ def test_warmup_steps_at_lr_zero_are_not_checked():
 
 def test_a_step_skipped_by_the_grad_scaler_is_not_checked():
     model, callback = torch.nn.Linear(2, 2), FirstStepMustMoveParams()
+    scaler = _GradScaler()
+    optimizer = _optimizer(1e-3, scaler)
     callback.on_train_begin(None, None, None, model=model)
-    _step(callback, model, _optimizer(1e-3, skipped=True), move=False)
-    _step(callback, model, _optimizer(1e-3), move=True)
+    callback.on_step_begin(None, None, None, optimizer=optimizer)
+    scaler.scale /= 2                                           # overflow: the step is skipped
+    callback.on_step_end(None, None, None, model=model, optimizer=optimizer)
+    _step(callback, model, optimizer, move=True)
     callback.on_train_end(None, None, None)
+
+
+def test_a_step_the_grad_scaler_did_not_skip_is_checked():
+    model, callback = torch.nn.Linear(2, 2), FirstStepMustMoveParams()
+    callback.on_train_begin(None, None, None, model=model)
+    with pytest.raises(RuntimeError, match="no trainable parameter changed"):
+        _step(callback, model, _optimizer(1e-3, _GradScaler()), move=False)
 
 
 def test_only_the_first_real_step_is_checked():
@@ -160,6 +179,31 @@ def test_a_real_trainer_run_at_lr_zero_is_stopped(tmp_path):
     trainer.add_callback(FirstStepMustMoveParams())
     with pytest.raises(RuntimeError, match="without an optimizer step at lr > 0"):
         trainer.train()
+
+
+fp16_amp = pytest.mark.skipif(not (torch.cuda.is_available() or torch.backends.mps.is_available()),
+                              reason="fp16 AMP needs CUDA or MPS")
+
+
+def _overflow_the_first_backward(model):
+    """An inf gradient in the first backward: the fp16 GradScaler skips that optimizer step."""
+    calls = {"n": 0}
+
+    def hook(grad):
+        calls["n"] += 1
+        return torch.full_like(grad, float("inf")) if calls["n"] == 1 else grad
+
+    next(p for p in model.parameters() if p.requires_grad).register_hook(hook)
+
+
+@fp16_amp
+@pytest.mark.parametrize("optim", ["adamw_torch_fused", "adamw_torch"])
+def test_a_real_fp16_step_skipped_by_the_grad_scaler_is_not_a_dead_run(tmp_path, optim):
+    """A fused AdamW never sets accelerate's step_was_skipped, so the skip must be seen another way."""
+    trainer = _trainer(tmp_path, learning_rate=1e-3, max_steps=3, fp16=True, optim=optim)
+    _overflow_the_first_backward(trainer.model)
+    trainer.add_callback(FirstStepMustMoveParams())
+    trainer.train()
 
 
 def test_a_real_trainer_run_that_moves_nothing_is_stopped(tmp_path, monkeypatch):

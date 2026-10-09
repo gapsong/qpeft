@@ -270,22 +270,19 @@ def test_a_batch_without_labels_may_have_loss_zero(tmp_path, monkeypatch):
     trainer.compute_loss(trainer.model, batch)          # must not raise
 
 
-def test_a_step_skipped_by_the_fp16_grad_scaler_is_not_a_dead_run(tmp_path, monkeypatch):
-    """With fp16=True the GradScaler skips the first steps while it finds its scale (overflow),
-    so the parameters do not move. The first-step check must wait for a real step."""
-    trainer = _trainer(_llama(), tmp_path, quant_config=_cfg(phase="e2e_qp"))
-    steps = {"n": 0}
-    real_step = torch.optim.AdamW.step
+@pytest.mark.skipif(not (torch.cuda.is_available() or torch.backends.mps.is_available()),
+                    reason="fp16 AMP needs CUDA or MPS")
+def test_a_step_skipped_by_the_fp16_grad_scaler_is_not_a_dead_run(tmp_path):
+    """With fp16=True the GradScaler skips a step whose gradients overflow, so the parameters
+    do not move. The first-step check must wait for a real step."""
+    trainer = _trainer(_llama(), tmp_path, quant_config=_cfg(phase="e2e_qp"), fp16=True)
+    calls = {"n": 0}
 
-    def step_skipping_the_first(self, *args, **kwargs):
-        steps["n"] += 1
-        if steps["n"] == 1:
-            return None                                   # what GradScaler does on overflow
-        return real_step(self, *args, **kwargs)
+    def overflow_the_first_backward(grad):
+        calls["n"] += 1
+        return torch.full_like(grad, float("inf")) if calls["n"] == 1 else grad
 
-    monkeypatch.setattr(torch.optim.AdamW, "step", step_skipping_the_first)
-    from accelerate.optimizer import AcceleratedOptimizer
-    monkeypatch.setattr(AcceleratedOptimizer, "step_was_skipped", property(lambda self: steps["n"] == 1))
+    next(p for p in trainer.model.parameters() if p.requires_grad).register_hook(overflow_the_first_backward)
     trainer.train()                                       # must not raise
 
 # --- Block-AP calibration batches ---------------------------------------------------
