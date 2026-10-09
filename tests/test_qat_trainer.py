@@ -270,35 +270,35 @@ def test_a_batch_without_labels_may_have_loss_zero(tmp_path, monkeypatch):
     trainer.compute_loss(trainer.model, batch)          # must not raise
 
 
-def test_a_step_skipped_by_the_fp16_grad_scaler_is_not_a_dead_run(tmp_path, monkeypatch):
-    """With fp16=True the GradScaler skips the first steps while it finds its scale (overflow),
-    so the parameters do not move. The first-step check must wait for a real step."""
-    trainer = _trainer(_llama(), tmp_path, quant_config=_cfg(phase="e2e_qp"))
-    steps = {"n": 0}
-    real_step = torch.optim.AdamW.step
+@pytest.mark.skipif(not (torch.cuda.is_available() or torch.backends.mps.is_available()),
+                    reason="fp16 AMP needs CUDA or MPS")
+def test_a_step_skipped_by_the_fp16_grad_scaler_is_not_a_dead_run(tmp_path):
+    """With fp16=True the GradScaler skips a step whose gradients overflow, so the parameters
+    do not move. The first-step check must wait for a real step."""
+    trainer = _trainer(_llama(), tmp_path, quant_config=_cfg(phase="e2e_qp"), fp16=True)
+    calls = {"n": 0}
 
-    def step_skipping_the_first(self, *args, **kwargs):
-        steps["n"] += 1
-        if steps["n"] == 1:
-            return None                                   # what GradScaler does on overflow
-        return real_step(self, *args, **kwargs)
+    def overflow_the_first_backward(grad):
+        calls["n"] += 1
+        return torch.full_like(grad, float("inf")) if calls["n"] == 1 else grad
 
-    monkeypatch.setattr(torch.optim.AdamW, "step", step_skipping_the_first)
-    monkeypatch.setattr(type(trainer.accelerator), "optimizer_step_was_skipped",
-                        property(lambda self: steps["n"] == 1))
+    next(p for p in trainer.model.parameters() if p.requires_grad).register_hook(overflow_the_first_backward)
     trainer.train()                                       # must not raise
 
 # --- Block-AP calibration batches ---------------------------------------------------
 
-def test_block_ap_batches_hold_exactly_block_ap_train_size_rows(tmp_path):
-    """16 samples in loader batches of 3 (3,3,3,3,3,1), re-split to 2 rows each.
-    The uneven tail of a loader batch must not be counted as a full Block-AP batch."""
+def test_block_ap_runs_on_the_batches_the_args_ask_for(tmp_path, monkeypatch):
+    """block_ap_train_size, block_ap_batch_size and block_ap_seqlen reach the calibration
+    batches (the batch builder itself: tests/test_hf_trainer.py)."""
+    import qpeft.trainer as T
     trainer = _trainer(_llama(), tmp_path, quant_config=_cfg(), per_device_train_batch_size=3,
-                       block_ap_batch_size=2, block_ap_train_size=5)
-    batches = trainer._block_ap_batches()
-    assert sum(b["input_ids"].shape[0] for b in batches) == 5
-    assert all(b["input_ids"].shape[0] <= 2 for b in batches)
-    assert all("labels" not in b for b in batches)
+                       block_ap_batch_size=2, block_ap_train_size=5, block_ap_seqlen=16)
+    seen = {}
+    monkeypatch.setattr(T, "run_block_ap", lambda model, batches, **kw: seen.update(batches=batches))
+    trainer._run_block_ap()
+    rows = [b["input_ids"].shape for b in seen["batches"]]
+    assert sum(r[0] for r in rows) == 5
+    assert all(r[0] <= 2 and r[1] == 16 for r in rows)
 
 
 # --- Trainer integration: checkpointing, KV cache, saving, imports ---------------------

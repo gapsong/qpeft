@@ -56,6 +56,7 @@ gradient accumulation, checkpoints and multi-GPU come from HF.
    - loss is finite and not exactly 0.0 (peft PR #2571 lesson); a batch whose labels
      are all -100 may have loss 0.0
    - after the first optimizer step at least one trainable parameter moved
+     (`FirstStepMustMoveParams` in `qpeft/hf_trainer.py`, shared with integrations)
 5. **End of `train()`.** Run `check_merge_equivalence` on every `QuantLinear`.
    Red -> raise, never hand back a model.
 6. **Saving.** `trainer.save_model()` merges (irreversible) and calls
@@ -112,7 +113,8 @@ multi-adapter, DPO/RLHF trainers, MLX backend, ternary.
 ## Open decisions (owner decides, not the agent)
 
 - [x] Block-AP calibration data: **reuses `train_dataset`** (first `block_ap_train_size`
-      samples, truncated to `block_ap_seqlen`). A separate `calib_dataset` is not built.
+      samples, truncated to `block_ap_seqlen`; `block_ap_batches` in `qpeft/hf_trainer.py`).
+      A separate `calib_dataset` is not built.
 - [x] `train()` does **not** merge; `trainer.save_model()` does (merge + save).
       `train()` runs the layer-level merge check at the end.
 - [x] EfficientQAT only; QA-LoRA keeps working via get_quant_model + your own loop / HF Trainer.

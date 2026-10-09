@@ -21,10 +21,11 @@ from typing import Optional
 
 import torch
 from torch import nn
-from transformers import Trainer, TrainerCallback, TrainingArguments
+from transformers import Trainer, TrainingArguments
 from transformers.utils import can_return_loss, find_labels
 
 from .block_ap import find_blocks, run_block_ap
+from .hf_trainer import FirstStepMustMoveParams, block_ap_batches
 from .mapping import get_quant_model
 from .peft_model import QuantModel
 from .quant_schemes import UnsupportedSchemeError
@@ -32,7 +33,6 @@ from .training import param_groups
 from .tuners.efficient_qat import EfficientQATConfig
 from .utils import verify_quant_model
 
-LABEL_KEYS = ("labels", "label", "label_ids")
 SAVE_HINT = ("only the merged int artifact is saved: train, then call trainer.save_model(output_dir) "
              "and upload that directory yourself.")
 
@@ -68,7 +68,7 @@ class QATTrainer(Trainer):
         _fill_bit_dependent_lrs(args, model.config.bits)
         super().__init__(model=model, args=args, **kwargs)
         self._point_trainer_at_the_hf_model()
-        self.add_callback(_FirstStepMustMoveParams(self))
+        self.add_callback(FirstStepMustMoveParams())
         self._log_setup()
 
     def train(self, *args, **kwargs):
@@ -129,26 +129,11 @@ class QATTrainer(Trainer):
 
     def _run_block_ap(self):
         a = self.args
-        run_block_ap(self.model, self._block_ap_batches(), epochs=a.block_ap_epochs,
+        batches = block_ap_batches(self, train_size=a.block_ap_train_size, seqlen=a.block_ap_seqlen,
+                                   batch_size=a.block_ap_batch_size)
+        run_block_ap(self.model, batches, epochs=a.block_ap_epochs,
                      weight_lr=a.weight_lr, quant_lr=a.quant_lr,
                      min_lr_factor=a.block_ap_min_lr_factor, weight_decay=a.weight_decay)
-
-    def _block_ap_batches(self):
-        """Calibration batches from train_dataset: labels removed, sequences cut to
-        block_ap_seqlen, re-split into block_ap_batch_size rows, block_ap_train_size rows in total."""
-        a = self.args
-        batches, rows_taken = [], 0
-        for batch in self.get_train_dataloader():
-            batch = self._prepare_inputs(batch)
-            batch = {k: _cut_sequence(v, a.block_ap_seqlen) for k, v in batch.items() if k not in LABEL_KEYS}
-            for start in range(0, _num_rows(batch), a.block_ap_batch_size):
-                size = min(a.block_ap_batch_size, a.block_ap_train_size - rows_taken)
-                part = {k: (v[start:start + size] if torch.is_tensor(v) else v) for k, v in batch.items()}
-                batches.append(part)
-                rows_taken += _num_rows(part)
-                if rows_taken >= a.block_ap_train_size:
-                    return batches
-        return batches
 
     def _point_trainer_at_the_hf_model(self):
         """Trainer inspects `self.model` for a few things. Here that is the QuantModel wrapper,
@@ -250,48 +235,3 @@ def _fill_bit_dependent_lrs(args, bits):
         args.weight_lr = 2e-5 if bits == 2 else 1e-5
     if args.e2e_lr is None:
         args.e2e_lr = 2e-5 if bits == 2 else 1e-5
-
-
-def _cut_sequence(value, seqlen):
-    return value[:, :seqlen] if torch.is_tensor(value) and value.dim() == 2 else value
-
-
-def _num_rows(batch):
-    return next(v for v in batch.values() if torch.is_tensor(v)).shape[0]
-
-
-class _FirstStepMustMoveParams(TrainerCallback):
-    """Stops training when the first optimizer step with lr > 0 moved no trainable parameter,
-    or when training ends without such a step (a warmup starts at lr 0).
-    Either way the model could not learn anything."""
-
-    HINT = "check the learning rates and the trainable set."
-
-    def __init__(self, trainer):
-        self.trainer = trainer
-        self.snapshot = None        # trainable params before the first lr > 0 step; None once checked
-        self.checking = False
-
-    def on_train_begin(self, args, state, control, **kw):
-        self.snapshot = {n: p.detach().clone() for n, p in self.trainer.model.named_parameters()
-                         if p.requires_grad}
-
-    def on_step_begin(self, args, state, control, **kw):
-        # The lr the coming optimizer step will use (the scheduler steps after it).
-        self.checking = self.snapshot is not None and any(
-            g["lr"] > 0 for g in self.trainer.optimizer.param_groups)
-
-    def on_step_end(self, args, state, control, **kw):
-        if not self.checking:
-            return
-        if self.trainer.accelerator.optimizer_step_was_skipped:
-            return          # the fp16 GradScaler skipped this step (overflow); check the next one
-        moved = any(not torch.equal(p, self.snapshot[n])
-                    for n, p in self.trainer.model.named_parameters() if n in self.snapshot)
-        self.snapshot, self.checking = None, False
-        if not moved:
-            raise RuntimeError(f"no trainable parameter changed in the first step with lr > 0 -- {self.HINT}")
-
-    def on_train_end(self, args, state, control, **kw):
-        if self.snapshot is not None:
-            raise RuntimeError(f"training ended without an optimizer step at lr > 0 -- {self.HINT}")
