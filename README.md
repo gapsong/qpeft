@@ -263,9 +263,11 @@ qpeft/
     efficient_qat/{config,model,layer}.py
     qa_lora/{config,model,layer,torchao}.py
     peqa/{config,model}.py
+  integrations/
+    axolotl/args.py    # the qpeft: block of an axolotl YAML and its refusals (needs pydantic; plugin not yet)
 examples/              # quickstart, train_efficient_qat, train_qa_lora, hf_injection, qat_trainer
 benchmarks/            # peqa_vs_official: PEQA against the official EfficientQAT code, and PEQA vs EfficientQAT
-tests/                 # merge equivalence, backends, injection, config, save/load, phases, precision, trainer, PEQA, tinygemm
+tests/                 # merge equivalence, backends, injection, config, save/load, phases, precision, trainer, PEQA, tinygemm, axolotl args
 pyproject.toml
 ```
 
