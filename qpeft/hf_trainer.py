@@ -64,9 +64,10 @@ class FirstStepMustMoveParams(TrainerCallback):
     def on_step_end(self, args, state, control, model=None, optimizer=None, **kw):
         if not self.checking:
             return
-        # The fp16 GradScaler halves its scale exactly when it skips a step (overflow); check the next one.
-        # Not accelerate's step_was_skipped: a fused optimizer (HF's default AdamW) never sets it.
-        if _grad_scale(optimizer) < self.scale_before:
+        # An fp16 overflow skipped this step; check the next one. Accelerate's step_was_skipped covers
+        # DeepSpeed, but a fused optimizer (HF's default AdamW) never sets it; there the GradScaler
+        # shows the skip by halving its scale.
+        if getattr(optimizer, "step_was_skipped", False) or _grad_scale(optimizer) < self.scale_before:
             return
         moved = any(not torch.equal(p, self.snapshot[n])
                     for n, p in model.named_parameters() if n in self.snapshot)

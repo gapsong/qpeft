@@ -89,8 +89,8 @@ def _step(callback, model, optimizer, move):
     callback.on_step_end(None, None, None, model=model, optimizer=optimizer)
 
 
-def _optimizer(lr, scaler=None):
-    return SimpleNamespace(param_groups=[{"lr": lr}], scaler=scaler)
+def _optimizer(lr, scaler=None, skipped=False):
+    return SimpleNamespace(param_groups=[{"lr": lr}], scaler=scaler, step_was_skipped=skipped)
 
 
 class _GradScaler:
@@ -140,6 +140,15 @@ def test_a_step_skipped_by_the_grad_scaler_is_not_checked():
     scaler.scale /= 2                                           # overflow: the step is skipped
     callback.on_step_end(None, None, None, model=model, optimizer=optimizer)
     _step(callback, model, optimizer, move=True)
+    callback.on_train_end(None, None, None)
+
+
+def test_a_step_skipped_without_a_grad_scaler_is_not_checked():
+    """DeepSpeed's optimizer wrapper has no GradScaler and reports the skip in step_was_skipped."""
+    model, callback = torch.nn.Linear(2, 2), FirstStepMustMoveParams()
+    callback.on_train_begin(None, None, None, model=model)
+    _step(callback, model, _optimizer(1e-3, skipped=True), move=False)
+    _step(callback, model, _optimizer(1e-3), move=True)
     callback.on_train_end(None, None, None)
 
 
