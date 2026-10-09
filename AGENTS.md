@@ -22,6 +22,12 @@ Open work: `TASKS.md` (local, not in git).
    A new backend is a `QuantScheme` subclass that implements four primitives and narrows `supports()`.
 6. **No stub without its equivalence test in the same step.**
 
+## Design principle: deep modules (Ousterhout)
+
+Small, simple interfaces that hide a lot of complexity: pull complexity down into the module, not up to its callers.
+No shallow wrappers, no pass-through methods, no internals leaking across module boundaries.
+Define errors out of existence where you can, but never at the cost of invariant 2: refuse, do not approximate.
+
 ## Naming convention (mirrors peft/torchtune)
 
 `<Method>Config`, `<Method>Model(BaseQuantTuner)`, `QuantLinear`,
