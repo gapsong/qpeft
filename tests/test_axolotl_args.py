@@ -128,6 +128,7 @@ def test_torchao_refuses_block_ap_at_config_time():
     ({"relora": True}, "`relora`: ReLoRA"),
     ({"merge_lora": True}, "`merge_lora`: qpeft merges"),
     ({"qat": {"weight_dtype": "int4"}}, "`qat`: axolotl's QAT"),
+    ({"inference": True}, "`inference`: axolotl inference would quantize the base model again"),
     ({"optimizer": "sgd"}, "`optimizer: sgd`: qpeft trains with AdamW"),
     ({"optimizer": "adamw_bnb_8bit"}, "`optimizer: adamw_bnb_8bit`"),
     ({"lora_r": 8, "lora_target_linear": True}, "`lora_r`, `lora_target_linear`: peft LoRA"),

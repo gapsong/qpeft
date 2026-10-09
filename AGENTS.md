@@ -41,6 +41,7 @@ Do not deviate from this without a reason.
 - `python examples/quickstart.py` - construction path for both methods
 - `pytest` - the test suite (`QPEFT_RUN_SLOW=1` also runs the tests that download a model)
 - `tests/test_gptq_load.py` (a real GPTQ load) runs only with `gptqmodel` and `optimum` installed; install them in a venv **without** axolotl (axolotl pins `optimum==1.16.2`, which cannot import `optimum.gptq` on transformers 5)
+- `QPEFT_RUN_SLOW=1 pytest tests/test_axolotl_e2e.py` - the axolotl plugin through the real `axolotl train` CLI (needs `.[axolotl]`; on Apple Silicon it trains on MPS)
 
 ## GPTQ export facts (verified in loader source, October 2026)
 
@@ -50,3 +51,20 @@ Do not deviate from this without a reason.
 - transformers 5 loads GPTQ only through optimum + gptqmodel; gptqmodel runs on CPU (macOS too).
   Its default 4-bit CPU kernel `TorchAtenLinear` rounds the scales to bf16; `GPTQConfig(backend="torch")` is the exact path.
 - vLLM main accepts GPTQ only with `sym=True` at 4 or 8 bits, so qpeft's asymmetric exports are refused there.
+
+## axolotl integration (`qpeft/integrations/axolotl/`)
+
+Facts about axolotl (verified on main `d17227d`, 2026-10) that the plugin is built around:
+
+- The `axolotl.plugins` entry point loads `QPeftPlugin` on every axolotl run, so every hook must do nothing unless `adapter: qpeft`.
+  Keep `integrations/axolotl/__init__.py` and `args.py` free of axolotl imports.
+- axolotl never calls a plugin's `create_optimizer`; the plugin sets `trainer.optimizer` in `post_trainer_create`, and HF's Trainer keeps an optimizer that is already set.
+- axolotl calls `post_train` twice (before and after its own final save), so `post_train` must be idempotent.
+- axolotl's final save and its Ctrl-C save call `model.save_pretrained(output_dir)`; transformers loads the resulting `model.safetensors` with only a warning and random weights.
+  Until axolotl has a plugin save hook, the plugin replaces `save_pretrained` on the model instance: saves into `output_dir` write no transformers weights, Trainer checkpoints still do (resume needs them).
+- axolotl drops INFO log lines of loggers whose name does not start with `axolotl`; log under `axolotl.integrations.qpeft`.
+- Never log from code that axolotl's Ctrl-C handler calls: the handler can interrupt axolotl's stdout tee while it holds a non-reentrant lock, and a log call then deadlocks.
+  Write such messages with `os.write(2, ...)`.
+- Off-GPU axolotl trains an fp16 model with fp16 AMP; the loss scaler skips the first ~3 steps (inf gradients) while it settles.
+  A run of 3 steps or fewer trains nothing, and `FirstStepMustMoveParams` stops it.
+- On MPS set `HF_DEACTIVATE_ASYNC_LOAD=1`, or transformers can crash while loading weights (transformers #48029).

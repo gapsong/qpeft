@@ -87,3 +87,15 @@ def test_non_divisible_group_size_raises():
     with pytest.raises(ValueError):
         get_quant_model(nn.Sequential(nn.Linear(100, 64)),
                         EfficientQATConfig(bits=4, group_size=64))
+
+
+def test_targets_that_match_nothing_are_refused():
+    with pytest.raises(ValueError, match=r"target_modules \['nope_proj'\] matched no nn.Linear"):
+        get_quant_model(Attn(), EfficientQATConfig(bits=4, group_size=64, target_modules=["nope_proj"]))
+
+
+def test_every_layer_that_cannot_be_quantized_is_named_and_the_model_stays_untouched():
+    model = nn.Sequential(nn.Linear(128, 8), nn.Linear(100, 8), nn.Linear(96, 8))
+    with pytest.raises(ValueError, match=r"(?s)2 of 3 target layers.*  1: in_features 100 .*  2: in_features 96 "):
+        get_quant_model(model, EfficientQATConfig(bits=4, group_size=64))
+    assert all(type(m) is nn.Linear for m in model)

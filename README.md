@@ -269,10 +269,11 @@ qpeft/
     qa_lora/{config,model,layer,torchao}.py
     peqa/{config,model}.py
   integrations/
-    axolotl/args.py    # the qpeft: block of an axolotl YAML and its refusals (needs pydantic; plugin not yet)
+    axolotl/args.py    # the qpeft: block of an axolotl YAML and its refusals (needs pydantic)
+    axolotl/plugin.py  # QPeftPlugin, `adapter: qpeft` for QA-LoRA and PEQA (needs .[axolotl])
 examples/              # quickstart, train_efficient_qat, train_qa_lora, hf_injection, qat_trainer
 benchmarks/            # peqa_vs_official: PEQA against the official EfficientQAT code, and PEQA vs EfficientQAT
-tests/                 # merge equivalence, backends, injection, config, save/load, phases, precision, trainer, PEQA, tinygemm, GPTQ export, axolotl args
+tests/                 # merge equivalence, backends, injection, config, save/load, phases, precision, trainer, PEQA, tinygemm, GPTQ export, axolotl args and plugin
 pyproject.toml
 ```
 
@@ -286,6 +287,7 @@ For why the repo exists, the three comparison approaches, and where each interfa
 pip install -e .                 # runtime is just torch
 pip install -e ".[torchao]"      # + the torchao backend
 pip install -e ".[train]"        # + QATTrainer (transformers 5.7.x)
+pip install -e ".[axolotl]"      # + the axolotl plugin (`adapter: qpeft`)
 pip install -e ".[dev]"          # + tests and examples
 python examples/quickstart.py
 ```

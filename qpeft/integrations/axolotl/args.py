@@ -31,6 +31,8 @@ _REFUSED_SETTINGS = {
     "merge_lora": ("qpeft merges into the integer model itself after training "
                    "(see the `export` key of the block)."),
     "qat": "axolotl's QAT would fake-quantize a second time, on top of qpeft.",
+    "inference": ("axolotl inference would quantize the base model again instead of loading the "
+                  "trained artifact; load it with qpeft.QuantModel.from_pretrained(base, output_dir)."),
 }
 _PARALLEL_SIZES = ("tensor_parallel_size", "context_parallel_size", "sequence_parallel_degree",
                    "expert_parallel_size", "dp_shard_size")
