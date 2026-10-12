@@ -361,6 +361,7 @@ Everything that would not round-trip exactly is refused before a file is written
 - a QA-LoRA artifact (fractional zero-points),
 - scales that fp16, GPTQ's scale dtype, does not hold exactly (an fp32 model; quantize and merge in bf16 or fp16),
 - a quantized layer outside the decoder blocks (for example `lm_head`), or different targets per block,
+- a quantized layer that a GPTQ loader keeps in float (a subclass of `nn.Linear`, for example an MoE router), or targets whose name suffixes would also replace an unquantized linear,
 - bits other than 2, 3, 4 and 8.
 
 `checkpoint_format="gptq"` (the default, GPTQ v1) stores `z - 1`, as GPTQ tooling expects.
