@@ -10,6 +10,7 @@ is qpeft's, bit for bit, in the scale's dtype. The export only transposes the co
 zero-points and keeps the scale in the model's dtype: no cast at all. It refuses every layer where a
 loader would not read that back exactly:
     - a fractional zero-point (a QA-LoRA fold): the format stores integers
+    - a scale in another dtype than the checkpoint's: a loader would cast it
     - a quantized layer that the model built from config.json does not hold as a plain nn.Linear,
       or whose weight that model ties to another tensor (a tied lm_head)
 
@@ -41,7 +42,7 @@ def export_compressed_tensors(model: nn.Module, save_directory) -> None:
     written. The tokenizer is not part of the model; save it next to it yourself."""
     root, layers = merged_quant_layers(model, FORMAT_NAME)
     _check_loader_holds_plain_linears(root, layers)
-    tensors = {name: _pack_quantized_tensors(name, layer) for name, layer in layers.items()}
+    tensors = {name: _pack_quantized_tensors(name, layer, root.dtype) for name, layer in layers.items()}
     save_checkpoint(root, tensors, save_directory, _quantization_config(layers))
 
 
@@ -69,13 +70,18 @@ def _check_loader_holds_plain_linears(root: nn.Module, layers: dict[str, QuantLi
                 "stays float. Quantize without it (target_modules), or untie the weights, then export.")
 
 
-def _pack_quantized_tensors(name: str, layer: QuantLinear) -> dict[str, torch.Tensor]:
+def _pack_quantized_tensors(name: str, layer: QuantLinear, model_dtype: torch.dtype) -> dict[str, torch.Tensor]:
     """The tensors of one pack-quantized layer: weight_packed (out, in * bits / 32) int32,
     weight_scale (out, n_groups) in the model's dtype, weight_zero_point
-    (ceil(out * bits / 32), n_groups) int32, packed along the outputs, weight_shape [out, in] int64."""
+    (ceil(out * bits / 32), n_groups) int32, packed along the outputs, weight_shape [out, in] int64.
+    `model_dtype` is the dtype save_pretrained writes to config.json; loaders make the scale in it."""
     bits = layer.config.bits
     if bits not in SUPPORTED_BITS:
         raise UnsupportedSchemeError(f"{name}: {FORMAT_NAME} export takes bits {SUPPORTED_BITS}, got {bits}.")
+    if layer.scale.dtype != model_dtype:
+        raise UnsupportedSchemeError(
+            f"{name}: its scales are {layer.scale.dtype}, but the checkpoint's dtype is {model_dtype}, and "
+            "a loader casts the scales to it. Quantize and merge the whole model in one dtype.")
     tensors = {
         "weight_packed": layer.qweight.t().contiguous(),
         "weight_scale": layer.scale.detach().contiguous(),

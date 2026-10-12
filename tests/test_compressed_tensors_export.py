@@ -197,6 +197,12 @@ def test_refuses_a_quantized_linear_subclass(tmp_path):
     _refused(model, tmp_path, "router.*Router, not a plain nn.Linear")
 
 
+def test_refuses_scales_in_another_dtype_than_the_checkpoint(tmp_path):
+    model = merged_peqa(4)
+    model.base.model.layers[0].mlp.up_proj.scale.data = model.base.model.layers[0].mlp.up_proj.scale.data.float()
+    _refused(model, tmp_path, "up_proj: its scales are torch.float32, but the checkpoint's dtype is torch.bfloat16")
+
+
 def test_refuses_bits_outside_what_vllm_takes(tmp_path):
     _refused(merged_peqa(1, targets=["down_proj"]), tmp_path, "bits")
 
