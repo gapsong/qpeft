@@ -108,8 +108,12 @@ The dequantization is still affine per group, `w = s * q + beta` with `beta = -z
 | GGUF `Q4_1` (`d` and `m` in fp16) | AWQ (`qzeros`) |
 | torchao int4 tinygemm layout (float zero-point domain) | torchao's integer zero-point domain |
 
-Rounding `z'` would break `fake_quant == merge`, so a future export into the right column has to refuse rather than approximate.
-Today qpeft exports to one format of the left column: `qpeft.kernels.to_tinygemm` runs a merged 4-bit model on PyTorch's int4 tinygemm kernel (CUDA).
+Rounding `z'` would break `fake_quant == merge`, so an export into the right column has to refuse rather than approximate.
+Today qpeft exports to one format of each column:
+
+- `qpeft.kernels.to_tinygemm` runs a merged 4-bit model on PyTorch's int4 tinygemm kernel (CUDA), also after a QA-LoRA fold.
+- `qpeft.export.export_gptq` writes a GPTQ checkpoint (see [GPTQ export](#gptq-export)).
+  EfficientQAT and PEQA keep integer zero-points, so their artifact maps onto GPTQ exactly; a QA-LoRA artifact is refused.
 
 ## What it does beyond peft
 
@@ -251,6 +255,7 @@ qpeft/
     registry.py        # qat_scheme -> scheme, build_scheme
   packing.py           # pack_codes / unpack_codes: codes in the GPTQ qweight layout
   kernels/tinygemm.py  # to_tinygemm: run a merged 4-bit model on the int4 tinygemm kernel (CUDA)
+  export/gptq.py       # export_gptq: write a merged model as a GPTQ checkpoint (transformers + gptqmodel load it)
   mapping.py           # get_quant_model + registries                         (~ get_peft_model)
   peft_model.py        # QuantModel.merge_and_unload()                        (~ PeftModel)
   utils.py             # check_merge_equivalence, verify_quant_model          (the spine test)
@@ -267,7 +272,7 @@ qpeft/
     axolotl/args.py    # the qpeft: block of an axolotl YAML and its refusals (needs pydantic; plugin not yet)
 examples/              # quickstart, train_efficient_qat, train_qa_lora, hf_injection, qat_trainer
 benchmarks/            # peqa_vs_official: PEQA against the official EfficientQAT code, and PEQA vs EfficientQAT
-tests/                 # merge equivalence, backends, injection, config, save/load, phases, precision, trainer, PEQA, tinygemm, axolotl args
+tests/                 # merge equivalence, backends, injection, config, save/load, phases, precision, trainer, PEQA, tinygemm, GPTQ export, axolotl args
 pyproject.toml
 ```
 
@@ -336,6 +341,35 @@ loaded = QuantModel.from_pretrained(base, "out")    # base supplies the architec
 cfg = QuantTuningConfig.from_pretrained("out")      # the right config class, or a clear refusal
 ```
 
+### GPTQ export
+
+A merged EfficientQAT or PEQA model exports as a GPTQ checkpoint, which transformers loads through optimum and gptqmodel:
+
+```python
+from qpeft.export import export_gptq
+
+model.merge_and_unload()
+export_gptq(model, "out-gptq")      # config.json with a quantization_config, model.safetensors
+tokenizer.save_pretrained("out-gptq")
+gptq = AutoModelForCausalLM.from_pretrained("out-gptq", device_map="cpu")   # needs gptqmodel + optimum
+```
+
+The export is exact: the weight a GPTQ loader decodes equals the merged model's weight bit for bit.
+Everything that would not round-trip exactly is refused before a file is written:
+
+- a QA-LoRA artifact (fractional zero-points),
+- scales that fp16, GPTQ's scale dtype, does not hold exactly (an fp32 model; quantize and merge in bf16 or fp16),
+- a quantized layer outside the decoder blocks (for example `lm_head`), or different targets per block,
+- bits other than 2, 3, 4 and 8.
+
+`checkpoint_format="gptq"` (the default, GPTQ v1) stores `z - 1`, as GPTQ tooling expects.
+Loaders undo that offset in different ways, so this format refuses a zero-point of 0.
+`checkpoint_format="gptq_v2"` stores `z` as it is and takes every zero-point, but only gptqmodel reads it.
+transformers + gptqmodel read both formats, also on CPU (tested on macOS for 2, 3, 4 and 8 bits).
+vLLM (main, October 2026) reads GPTQ only with `sym=True` at 4 or 8 bits, so it refuses qpeft's asymmetric checkpoints.
+For 4 bits on CPU, gptqmodel picks its `TorchAtenLinear` kernel, which rounds the scales to bf16 itself.
+That stays within bf16 noise for a bf16 model; `GPTQConfig(backend="torch")` keeps fp16 scales exact.
+
 Run the spine test per layer before trusting a scheme:
 
 ```python
@@ -370,7 +404,7 @@ The `int_uniform` contract is implemented against two backends, and both are gre
 `backend="auto"` selects the pure-torch `ReferenceIntUniformScheme`, which is always available.
 `backend="torchao"` selects `TorchaoIntUniformScheme`, built on torchao's stable `quant_primitives` and imported lazily so torchao stays optional.
 `examples/train_*.py` show real training plus an integer merge, `examples/hf_injection.py` shows injection into a Hugging Face model, and `examples/qat_trainer.py` runs both EfficientQAT phases on Qwen3-0.6B.
-The test suite (`pytest`, plus `QPEFT_RUN_SLOW=1` for the tests that download a model) covers merge equivalence, both backends, injection, initialization, config, save/load, the EfficientQAT phases, PEQA against its paper, half precision, the trainer and the tinygemm export.
+The test suite (`pytest`, plus `QPEFT_RUN_SLOW=1` for the tests that download a model) covers merge equivalence, both backends, injection, initialization, config, save/load, the EfficientQAT phases, PEQA against its paper, half precision, the trainer, the tinygemm export and the GPTQ export (the file, and a real load through transformers + gptqmodel on CPU).
 
 Model quality is measured only on a small scale so far.
 `benchmarks/peqa_vs_official` runs PEQA against the official EfficientQAT code (same codes, same training steps, and the merged artifact runs in the official int layer) and compares RTN, PEQA, Block-AP and EfficientQAT by perplexity on SmolLM2-360M (WikiText-2 and C4).
@@ -380,9 +414,8 @@ Not supported:
 
 - Loading an already-quantized checkpoint (GPTQ, AWQ, torchao-packed).
   `TorchaoQuantLinear` is a stub, blocked by torchao's in-flux tensor-subclass API.
-- Exporting to GPTQ, AWQ, MLX or GGUF files.
-  Only the tinygemm export exists (4 bits, CUDA).
-  An EfficientQAT or PEQA artifact has the right shape for GPTQ (int codes, scale, integer zero-point), but no exporter writes the file.
+- Exporting to AWQ, MLX or GGUF files, and a GPTQ export of a QA-LoRA artifact (its zero-points are fractional).
+  The exports are tinygemm (4 bits, CUDA) and GPTQ (EfficientQAT and PEQA).
 - The `mlx` backend and the planned ternary scheme.
 
 ## License
