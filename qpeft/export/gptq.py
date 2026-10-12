@@ -133,7 +133,9 @@ def _block_layout(root: nn.Module, layers: dict[str, QuantLinear]) -> tuple[str,
 
 
 def _loader_replaces(module: nn.Module) -> bool:
-    """The layer types optimum's get_layers finds inside the blocks; a QuantLinear was an nn.Linear.
+    """The layer types optimum's get_layers (optimum/gptq/utils.py) finds inside the blocks; a
+    QuantLinear was an nn.Linear. get_layers takes nn.Linear by exact type, so a subclass of it (an
+    MoE router with its own forward) stays float, and takes nn.Conv2d and Conv1D by isinstance.
     Conv1D is transformers' (GPT-2), matched by name so that qpeft does not import transformers."""
     return (isinstance(module, (QuantLinear, nn.Conv2d)) or type(module) is nn.Linear
             or type(module).__name__ == "Conv1D")

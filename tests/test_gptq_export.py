@@ -153,6 +153,23 @@ def test_a_subset_of_the_block_linears_names_them_for_the_loader(tmp_path):
     assert "model.layers.0.self_attn.q_proj.qweight" in tensors
 
 
+def test_a_subclass_of_linear_in_the_blocks_is_not_one_the_loader_replaces(tmp_path):
+    """optimum's get_layers takes nn.Linear by exact type, so it leaves a subclass (an MoE router)
+    in float; quantizing every plain block linear is then the whole block, with no name list."""
+    class _Router(torch.nn.Linear):
+        pass
+
+    base = _llama(torch.bfloat16)
+    for block in base.model.layers:
+        block.router = _Router(128, 4).to(torch.bfloat16)
+    model = get_quant_model(base, PEQAConfig(bits=4, group_size=64, target_modules=BLOCK_LINEARS))
+    model.merge_and_unload()
+    assert type(base.model.layers[0].router) is _Router
+    tensors, config = _export(model, tmp_path)
+    assert "modules_in_block_to_quantize" not in config
+    assert "model.layers.0.router.weight" in tensors                            # stays float
+
+
 def test_tied_embeddings_are_written_once(tmp_path):
     tensors, _ = _export(_merged_peqa(4, tie=True), tmp_path)
     assert "model.embed_tokens.weight" in tensors and "lm_head.weight" not in tensors

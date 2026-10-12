@@ -354,7 +354,8 @@ tokenizer.save_pretrained("out-gptq")
 gptq = AutoModelForCausalLM.from_pretrained("out-gptq", device_map="cpu")   # needs gptqmodel + optimum
 ```
 
-The export is exact: the weight a GPTQ loader decodes equals the merged model's weight bit for bit.
+The export is exact: the written tensors decode, with the GPTQ formula, to the merged model's weight bit for bit in the model's dtype.
+A loader's kernel may compute in another dtype: gptqmodel's torch kernel dequantizes in fp16, and its default 4-bit CPU kernel rounds the scales to bf16.
 Everything that would not round-trip exactly is refused before a file is written:
 
 - a QA-LoRA artifact (fractional zero-points),
