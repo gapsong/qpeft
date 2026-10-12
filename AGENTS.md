@@ -40,3 +40,13 @@ Do not deviate from this without a reason.
 - `pip install -e ".[dev]"` - editable install (the torchao backend: `.[torchao]`)
 - `python examples/quickstart.py` - construction path for both methods
 - `pytest` - the test suite (`QPEFT_RUN_SLOW=1` also runs the tests that download a model)
+- `tests/test_gptq_load.py` (a real GPTQ load) runs only with `gptqmodel` and `optimum` installed; install them in a venv **without** axolotl (axolotl pins `optimum==1.16.2`, which cannot import `optimum.gptq` on transformers 5)
+
+## GPTQ export facts (verified in loader source, October 2026)
+
+- GPTQ v1 (`checkpoint_format: gptq`) stores `z - 1`.
+  gptqmodel undoes it with a whole-word add for 2/4/8 bits (a carry runs into the next field) and per field mod `2**bits` for 3 bits, so only `z >= 1` reads the same everywhere; `export_gptq` refuses `z == 0` in v1.
+  `gptq_v2` stores `z` and is read by gptqmodel only.
+- transformers 5 loads GPTQ only through optimum + gptqmodel; gptqmodel runs on CPU (macOS too).
+  Its default 4-bit CPU kernel `TorchAtenLinear` rounds the scales to bf16; `GPTQConfig(backend="torch")` is the exact path.
+- vLLM main accepts GPTQ only with `sym=True` at 4 or 8 bits, so qpeft's asymmetric exports are refused there.
