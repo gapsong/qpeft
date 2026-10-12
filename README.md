@@ -292,6 +292,9 @@ pip install -e ".[dev]"          # + tests and examples
 python examples/quickstart.py
 ```
 
+axolotl releases up to 0.20.x do not load plugins from entry points, so there the axolotl YAML must list the plugin: `plugins: [qpeft.integrations.axolotl.plugin.QPeftPlugin]`.
+axolotl main after 0.20.0 finds it on its own.
+
 ```python
 import torch.nn as nn
 from qpeft import get_quant_model, QALoraConfig, efficient_qat_schedule

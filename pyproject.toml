@@ -10,7 +10,7 @@ dependencies = ["torch>=2.4"]
 [project.optional-dependencies]
 torchao = ["torchao>=0.7"]           # real schemes/kernels bind to torchao
 train = ["transformers>=5.7,<6", "accelerate>=0.26"]   # trainer.py uses Trainer internals; verified on 5.7
-axolotl = ["axolotl>=0.20"]           # integrations/axolotl/plugin.py; auto-found needs axolotl's entry-point plugins (main after 0.20.0)
+axolotl = ["axolotl>=0.20"]           # integrations/axolotl/plugin.py; axolotl <= 0.20.x needs it under `plugins:` (README)
 dev = ["pytest>=8", "transformers>=5.7,<6", "accelerate>=0.26", "datasets>=2.14",  # datasets: examples/qat_trainer.py
        "pydantic>=2",                  # integrations/axolotl/args.py; at runtime axolotl brings it
        "numpy"]                        # tests/test_packing.py

@@ -19,6 +19,7 @@ ADAMW_OPTIMIZERS = ("adamw_torch", "adamw_torch_fused")
 _SHARDED = "sharded training is not supported: QuantLinear quantizes and merges full weights."
 _PREQUANTIZED = ("qpeft quantizes the full-precision base itself; "
                  "a pre-quantized base has no grid that qpeft can merge into.")
+_OWN_OPTIMIZER_GROUPS = "qpeft builds its own optimizer groups (param_groups) and would ignore it."
 _REFUSED_SETTINGS = {
     "fsdp": _SHARDED,
     "fsdp_config": _SHARDED,
@@ -33,6 +34,11 @@ _REFUSED_SETTINGS = {
     "qat": "axolotl's QAT would fake-quantize a second time, on top of qpeft.",
     "inference": ("axolotl inference would quantize the base model again instead of loading the "
                   "trained artifact; load it with qpeft.QuantModel.from_pretrained(base, output_dir)."),
+    "loraplus_lr_ratio": _OWN_OPTIMIZER_GROUPS,
+    "loraplus_lr_embedding": _OWN_OPTIMIZER_GROUPS,
+    "embedding_lr": _OWN_OPTIMIZER_GROUPS,
+    "embedding_lr_scale": _OWN_OPTIMIZER_GROUPS,
+    "lr_groups": _OWN_OPTIMIZER_GROUPS,
 }
 _PARALLEL_SIZES = ("tensor_parallel_size", "context_parallel_size", "sequence_parallel_degree",
                    "expert_parallel_size", "dp_shard_size")

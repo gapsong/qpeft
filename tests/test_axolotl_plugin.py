@@ -3,7 +3,6 @@ them, on a tiny random Llama and a plain Hugging Face Trainer. No download, no a
 tests/test_axolotl_e2e.py runs the real `axolotl train`."""
 import subprocess
 import sys
-import tomllib
 from importlib.metadata import EntryPoint
 from pathlib import Path
 
@@ -91,6 +90,7 @@ def test_every_hook_does_nothing_without_adapter_qpeft(tmp_path):
 
 
 def test_the_entry_point_and_the_input_args_resolve_to_the_plugin():
+    tomllib = pytest.importorskip("tomllib")
     points = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["entry-points"]["axolotl.plugins"]
     plugin = EntryPoint("qpeft", points["qpeft"], "axolotl.plugins").load()
     assert plugin is QPeftPlugin
@@ -120,6 +120,13 @@ def test_efficient_qat_is_refused_when_axolotl_registers_the_plugin(tmp_path):
         plugin.register({"adapter": "qpeft", "qpeft": {"method": "efficient_qat"}})
     for block in BLOCKS.values():
         plugin.register({"adapter": "qpeft", "qpeft": block})
+
+
+@pytest.mark.parametrize("method", ["qa_lora", "peqa"])
+def test_an_export_other_than_the_qpeft_artifact_is_refused_when_axolotl_registers_the_plugin(method):
+    with pytest.raises(UnsupportedSchemeError, match="does not run qpeft.export: gptq in axolotl yet"):
+        QPeftPlugin().register({"adapter": "qpeft", "qpeft": {**BLOCKS[method], "export": "gptq"}})
+    QPeftPlugin().register({"adapter": "qpeft", "qpeft": {**BLOCKS[method], "export": "qpeft"}})
 
 
 @pytest.mark.parametrize("mode", [{"inference": True}, {"config_only": True}])

@@ -43,12 +43,18 @@ class QPeftPlugin(BasePlugin):
         """Called with the raw config before axolotl validates it: the earliest point to refuse."""
         if cfg.get("adapter") != ADAPTER:
             return
-        method = (cfg.get("qpeft") or {}).get("method")
-        if method == "efficient_qat":
+        block = cfg.get("qpeft") or {}
+        if block.get("method") == "efficient_qat":
             raise UnsupportedSchemeError(
                 "adapter: qpeft does not run method efficient_qat in axolotl yet: its Block-AP phase "
                 f"is not wired into the plugin. Supported here: {list(PLUGIN_METHODS)}. "
                 "For EfficientQAT use qpeft.QATTrainer (examples/qat_trainer.py).")
+        export = block.get("export", "qpeft")
+        if export != "qpeft":
+            raise UnsupportedSchemeError(
+                f"adapter: qpeft does not run qpeft.export: {export} in axolotl yet: the plugin writes "
+                "only the qpeft artifact (qpeft_config.json + qpeft_model.pt), GPTQ export is not "
+                "wired in. Use export: qpeft. (QA-LoRA refuses GPTQ export by design.)")
 
     def get_input_args(self):
         return "qpeft.integrations.axolotl.args.QPeftArgs"
@@ -110,12 +116,13 @@ class QPeftPlugin(BasePlugin):
             if is_checkpoint and not self.qmodel.is_merged:
                 return hf_save_pretrained(save_directory, *args, **kwargs)
             if self.qmodel.is_merged:
-                LOG.info(f"qpeft: no transformers weights written to {save_directory}; "
-                         f"the model is the qpeft artifact in {self.output_dir}")
+                message = (f"no transformers weights written to {save_directory}; "
+                           f"the model is the qpeft artifact in {self.output_dir}")
             else:
-                # This runs in axolotl's Ctrl-C handler, which can interrupt axolotl's stdout tee while
-                # it holds a non-reentrant lock: logging here can deadlock, os.write cannot.
-                os.write(2, (f"[qpeft] training stopped before the merge, so no model was written to "
-                             f"{save_directory}. Resume from the last checkpoint to finish the run.\n").encode())
+                message = (f"training stopped before the merge, so no model was written to "
+                           f"{save_directory}. Resume from the last checkpoint to finish the run.")
+            # This runs in axolotl's Ctrl-C handler, which can interrupt axolotl's stdout tee while
+            # it holds a non-reentrant lock: logging here can deadlock, os.write cannot.
+            os.write(2, f"[qpeft] {message}\n".encode())
 
         model.save_pretrained = save_pretrained
