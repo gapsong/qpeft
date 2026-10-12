@@ -269,10 +269,11 @@ qpeft/
     qa_lora/{config,model,layer,torchao}.py
     peqa/{config,model}.py
   integrations/
-    axolotl/args.py    # the qpeft: block of an axolotl YAML and its refusals (needs pydantic; plugin not yet)
+    axolotl/args.py    # the qpeft: block of an axolotl YAML and its refusals (needs pydantic)
+    axolotl/plugin.py  # QPeftPlugin, `adapter: qpeft` for QA-LoRA and PEQA (needs .[axolotl])
 examples/              # quickstart, train_efficient_qat, train_qa_lora, hf_injection, qat_trainer
 benchmarks/            # peqa_vs_official: PEQA against the official EfficientQAT code, and PEQA vs EfficientQAT
-tests/                 # merge equivalence, backends, injection, config, save/load, phases, precision, trainer, PEQA, tinygemm, GPTQ export, axolotl args
+tests/                 # merge equivalence, backends, injection, config, save/load, phases, precision, trainer, PEQA, tinygemm, GPTQ export, axolotl args and plugin
 pyproject.toml
 ```
 
@@ -286,9 +287,13 @@ For why the repo exists, the three comparison approaches, and where each interfa
 pip install -e .                 # runtime is just torch
 pip install -e ".[torchao]"      # + the torchao backend
 pip install -e ".[train]"        # + QATTrainer (transformers 5.7.x)
+pip install -e ".[axolotl]"      # + the axolotl plugin (`adapter: qpeft`)
 pip install -e ".[dev]"          # + tests and examples
 python examples/quickstart.py
 ```
+
+axolotl releases up to 0.20.x do not load plugins from entry points, so there the axolotl YAML must list the plugin: `plugins: [qpeft.integrations.axolotl.plugin.QPeftPlugin]`.
+axolotl main after 0.20.0 finds it on its own.
 
 ```python
 import torch.nn as nn
@@ -330,6 +335,7 @@ It is the same mechanics as EfficientQAT's E2E-QP, without Block-AP before it.
 There is no official PEQA code, so `tests/test_peqa.py` checks it against the paper's equations.
 Two differences to the paper: qpeft is group-wise only (the paper's main results are per-channel), and qpeft clamps the scale to `[1e-4, 1e4]`.
 QA-LoRA runs with `get_quant_model` and your own loop or a plain HF `Trainer`; `param_groups` builds the optimizer groups.
+QA-LoRA and PEQA also run in axolotl with `adapter: qpeft` (EfficientQAT not yet); the plugin leaves the merged integer artifact in `output_dir` (see `qpeft/integrations/axolotl/plugin.py`).
 
 Save and load: only a merged model can be saved, as the integer artifact.
 
@@ -392,6 +398,7 @@ model = get_quant_model(hf, EfficientQATConfig(
 ```
 
 `target_modules` matches as in peft: a list entry is a module's full name or its last dotted part(s) (`"v_proj"` does not also hit `qkv_proj`), a string is a regex on the full name, and `None` takes every `nn.Linear`.
+`get_quant_model` refuses before it changes the model if no layer matches, or if a matched layer's `in_features` does not fit `group_size` and `bits`; the error lists every such layer.
 
 ## References
 

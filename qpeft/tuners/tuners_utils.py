@@ -47,7 +47,9 @@ class QuantLinear(nn.Module):
     def __init__(self, base: nn.Linear, scheme: QuantScheme,
                  config: QuantTuningConfig, adapter: Optional[nn.Module] = None):
         super().__init__()
-        _check_packable_shape(base.in_features, config)
+        problem = _packing_problem(base.in_features, config)
+        if problem:
+            raise ValueError(problem)
         self.scheme = scheme
         self.config = config
         self.adapter = adapter
@@ -202,12 +204,14 @@ class QuantLinear(nn.Module):
                 "codes diverge. Refusing.")
 
 
-def _check_packable_shape(in_features: int, config: QuantTuningConfig):
+def _packing_problem(in_features: int, config: QuantTuningConfig) -> Optional[str]:
+    """Why a linear with `in_features` inputs cannot hold this config's packed codes; None if it can."""
     if in_features % config.group_size != 0:
-        raise ValueError(f"in_features {in_features} not divisible by group_size {config.group_size}")
+        return f"in_features {in_features} not divisible by group_size {config.group_size}"
     if (in_features * config.bits) % 32 != 0:
-        raise ValueError(f"in_features {in_features} x {config.bits} bits does not fill whole "
-                         "int32 words; the packed codes need in_features * bits to be a multiple of 32.")
+        return (f"in_features {in_features} x {config.bits} bits does not fill whole int32 words; "
+                "the packed codes need in_features * bits to be a multiple of 32.")
+    return None
 
 
 def quant_layers(model: nn.Module) -> list[QuantLinear]:
@@ -233,6 +237,7 @@ class BaseQuantTuner:
             return
 
         targets = [name for name, module in self.model.named_modules() if self._is_target(name, module)]
+        self._refuse_unquantizable(targets)
         for name in targets:
             parent_name, _, attr = name.rpartition(".")
             parent = self.model.get_submodule(parent_name)
@@ -241,6 +246,19 @@ class BaseQuantTuner:
 
     def _create_new_module(self, target: nn.Linear) -> QuantLinear:
         raise NotImplementedError("each method's model builds its own QuantLinear")
+
+    def _refuse_unquantizable(self, targets: list[str]):
+        """Checked before the first layer is swapped, so a refusal leaves the model untouched."""
+        if not targets:
+            raise ValueError(f"target_modules {self.config.target_modules!r} matched no nn.Linear "
+                             "in the model; nothing would be quantized.")
+        problems = {name: _packing_problem(self.model.get_submodule(name).in_features, self.config)
+                    for name in targets}
+        problems = {name: problem for name, problem in problems.items() if problem}
+        if problems:
+            lines = "\n".join(f"  {name}: {problem}" for name, problem in problems.items())
+            raise ValueError(f"{len(problems)} of {len(targets)} target layers cannot be quantized "
+                             f"with bits={self.config.bits}, group_size={self.config.group_size}:\n{lines}")
 
     def _is_target(self, name, module):
         """Which nn.Linear to quantize, matched as peft's check_target_module_exists does:
