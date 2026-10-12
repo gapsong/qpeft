@@ -19,6 +19,8 @@ from safetensors.torch import load_file                                 # noqa: 
 from qpeft import (                                                     # noqa: E402
     EfficientQATConfig, PEQAConfig, QALoraConfig, UnsupportedSchemeError, get_quant_model, run_block_ap,
 )
+from transformers import LlamaConfig, LlamaForCausalLM                  # noqa: E402
+
 from qpeft.export import export_gptq                                    # noqa: E402
 from qpeft.tuners.tuners_utils import QuantLinear                       # noqa: E402
 
@@ -26,10 +28,30 @@ BLOCK_LINEARS = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj",
 VOCAB = 320
 
 
-def _llama(dtype, tie=False):
-    from transformers import LlamaConfig, LlamaForCausalLM
+class _Router(torch.nn.Linear):
+    """A subclass of nn.Linear, like an MoE router with its own forward."""
+
+
+class _LlamaWithRouters(LlamaForCausalLM):
+    """Every decoder block also holds a _Router, so the model a loader builds from config has it too."""
+    def __init__(self, config):
+        super().__init__(config)
+        for block in self.model.layers:
+            block.router = _Router(config.hidden_size, 8)
+
+
+class _LlamaWithMyselfAttn(LlamaForCausalLM):
+    """Every decoder block also holds a plain linear "myself_attn.o_proj"."""
+    def __init__(self, config):
+        super().__init__(config)
+        for block in self.model.layers:
+            block.myself_attn = torch.nn.Module()
+            block.myself_attn.o_proj = torch.nn.Linear(config.hidden_size, config.hidden_size)
+
+
+def _llama(dtype, tie=False, model_class=LlamaForCausalLM):
     torch.manual_seed(0)
-    return LlamaForCausalLM(LlamaConfig(
+    return model_class(LlamaConfig(
         hidden_size=128, intermediate_size=256, num_hidden_layers=2, num_attention_heads=4,
         num_key_value_heads=4, vocab_size=VOCAB, max_position_embeddings=64,
         tie_word_embeddings=tie)).to(dtype).eval()
@@ -156,12 +178,7 @@ def test_a_subset_of_the_block_linears_names_them_for_the_loader(tmp_path):
 def test_a_subclass_of_linear_in_the_blocks_is_not_one_the_loader_replaces(tmp_path):
     """optimum's get_layers takes nn.Linear by exact type, so it leaves a subclass (an MoE router)
     in float; quantizing every plain block linear is then the whole block, with no name list."""
-    class _Router(torch.nn.Linear):
-        pass
-
-    base = _llama(torch.bfloat16)
-    for block in base.model.layers:
-        block.router = _Router(128, 4).to(torch.bfloat16)
+    base = _llama(torch.bfloat16, model_class=_LlamaWithRouters)
     model = get_quant_model(base, PEQAConfig(bits=4, group_size=64, target_modules=BLOCK_LINEARS))
     model.merge_and_unload()
     assert type(base.model.layers[0].router) is _Router
@@ -236,14 +253,21 @@ def test_refuses_different_linears_per_block(tmp_path):
 def test_refuses_when_the_loader_suffix_match_would_hit_an_unquantized_linear(tmp_path):
     """optimum keeps a block linear when its full name str.endswith a quantized name, without a dot
     boundary: "model.layers.0.myself_attn.o_proj" ends with "self_attn.o_proj"."""
-    base = _llama(torch.bfloat16)
-    for block in base.model.layers:
-        block.myself_attn = torch.nn.Module()
-        block.myself_attn.o_proj = torch.nn.Linear(128, 128).to(torch.bfloat16)
+    base = _llama(torch.bfloat16, model_class=_LlamaWithMyselfAttn)
     model = get_quant_model(base, PEQAConfig(bits=4, group_size=64, target_modules=["self_attn.o_proj"]))
     model.merge_and_unload()
     assert type(base.model.layers[0].myself_attn.o_proj) is torch.nn.Linear
     _refused(model, tmp_path, "myself_attn.o_proj")
+
+
+def test_refuses_a_quantized_linear_subclass_the_loader_keeps_in_float(tmp_path):
+    """optimum's get_layers takes nn.Linear by exact type, so a loader would keep the router in
+    float and random-initialize it: the checkpoint holds only its GPTQ tensors."""
+    model = get_quant_model(_llama(torch.bfloat16, model_class=_LlamaWithRouters),
+                            PEQAConfig(bits=4, group_size=64, target_modules=BLOCK_LINEARS + ["router"]))
+    model.merge_and_unload()
+    assert isinstance(model.base.model.layers[0].router, QuantLinear)
+    _refused(model, tmp_path, "router.*exact type")
 
 
 def test_refuses_bits_a_gptq_loader_does_not_take(tmp_path):

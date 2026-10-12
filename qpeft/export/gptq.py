@@ -20,6 +20,7 @@ The zero-point convention is the checkpoint_format:
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -93,9 +94,10 @@ def _shared_grid(layers: dict[str, QuantLinear]) -> tuple[int, int]:
 
 def _block_layout(root: nn.Module, layers: dict[str, QuantLinear]) -> tuple[str, list[str] | None]:
     """The decoder blocks the quantized layers live in, and the block-relative names a GPTQ loader
-    must quantize (None: every linear in a block). The loader replaces exactly the linears inside
-    `block_name` whose name ends with one of these names; anything else it would leave in float
-    (a quantized lm_head) or fill with uninitialized GPTQ tensors (an unquantized q_proj)."""
+    must quantize (None: every linear in a block). The loader builds the model from config.json and
+    replaces exactly the linears inside `block_name` whose name ends with one of these names; anything
+    else it would leave in float (a quantized lm_head) or fill with uninitialized GPTQ tensors (an
+    unquantized q_proj)."""
     placement = {name: BLOCK_NAME.fullmatch(name) for name in layers}
     outside = sorted(name for name, match in placement.items() if match is None)
     if outside:
@@ -118,9 +120,16 @@ def _block_layout(root: nn.Module, layers: dict[str, QuantLinear]) -> tuple[str,
             "GPTQ quantizes the same linears in every decoder block; this model quantizes "
             "different ones per block. Use the same target_modules for every block.")
 
-    in_blocks = {f"{block_name}.{name}": m for name, m in blocks.named_modules() if _loader_replaces(m)}
-    quantized = {name for name, m in in_blocks.items() if isinstance(m, QuantLinear)}
-    if quantized == set(in_blocks):
+    loader_blocks = _loader_skeleton(root).get_submodule(block_name)
+    in_blocks = {f"{block_name}.{name}" for name, m in loader_blocks.named_modules() if _loader_replaces(m)}
+    quantized = set(layers)
+    kept_in_float = sorted(quantized - in_blocks)
+    if kept_in_float:
+        raise UnsupportedSchemeError(
+            f"a GPTQ loader would keep {kept_in_float} in float and random-initialize them: in the "
+            "model it builds from config.json they are not plain nn.Linear layers, and optimum's "
+            "get_layers takes nn.Linear by exact type. Quantize without them (target_modules), then export.")
+    if quantized == in_blocks:
         return block_name, None
     names = sorted(modules)
     # optimum's convert_model keeps a layer when its full name ends with one of the names, plain str.endswith.
@@ -132,13 +141,19 @@ def _block_layout(root: nn.Module, layers: dict[str, QuantLinear]) -> tuple[str,
     return block_name, names
 
 
+def _loader_skeleton(root: nn.Module) -> nn.Module:
+    """The model a GPTQ loader builds from config.json before it replaces any layer, on the meta
+    device: no weights, and the user's model and config stay untouched."""
+    with torch.device("meta"):
+        return type(root)(copy.deepcopy(root.config))
+
+
 def _loader_replaces(module: nn.Module) -> bool:
-    """The layer types optimum's get_layers (optimum/gptq/utils.py) finds inside the blocks; a
-    QuantLinear was an nn.Linear. get_layers takes nn.Linear by exact type, so a subclass of it (an
-    MoE router with its own forward) stays float, and takes nn.Conv2d and Conv1D by isinstance.
+    """The layer types optimum's get_layers (optimum/gptq/utils.py) finds inside the blocks.
+    get_layers takes nn.Linear by exact type, so a subclass of it (an MoE router with its own
+    forward) stays float, and takes nn.Conv2d and Conv1D by isinstance.
     Conv1D is transformers' (GPT-2), matched by name so that qpeft does not import transformers."""
-    return (isinstance(module, (QuantLinear, nn.Conv2d)) or type(module) is nn.Linear
-            or type(module).__name__ == "Conv1D")
+    return isinstance(module, nn.Conv2d) or type(module) is nn.Linear or type(module).__name__ == "Conv1D"
 
 
 def _gptq_tensors(name: str, layer: QuantLinear, checkpoint_format: str) -> dict[str, torch.Tensor]:
