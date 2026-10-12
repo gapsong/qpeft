@@ -41,6 +41,7 @@ Do not deviate from this without a reason.
 - `python examples/quickstart.py` - construction path for both methods
 - `pytest` - the test suite (`QPEFT_RUN_SLOW=1` also runs the tests that download a model)
 - `tests/test_gptq_load.py` (a real GPTQ load) runs only with `gptqmodel` and `optimum` installed; install them in a venv **without** axolotl (axolotl pins `optimum==1.16.2`, which cannot import `optimum.gptq` on transformers 5)
+- `tests/test_compressed_tensors_load.py` (a real compressed-tensors load) runs only with `compressed-tensors>=0.18` installed
 - `QPEFT_RUN_SLOW=1 pytest tests/test_axolotl_e2e.py` - the axolotl plugin through the real `axolotl train` CLI (needs `.[axolotl]`; on Apple Silicon it trains on MPS)
 
 ## GPTQ export facts (verified in loader source, October 2026)
@@ -51,6 +52,16 @@ Do not deviate from this without a reason.
 - transformers 5 loads GPTQ only through optimum + gptqmodel; gptqmodel runs on CPU (macOS too).
   Its default 4-bit CPU kernel `TorchAtenLinear` rounds the scales to bf16; `GPTQConfig(backend="torch")` is the exact path.
 - vLLM main accepts GPTQ only with `sym=True` at 4 or 8 bits, so qpeft's asymmetric exports are refused there.
+
+## compressed-tensors export facts (verified in loader source, October 2026)
+
+- compressed-tensors stores signed codes and zero-points (`v - 2**(bits-1)`) and packs `v + 2**(bits-1)`, so the packed words hold qpeft's unsigned `q` and `z` unchanged; dequant is `(q_s - z_s) * scale` in the scale's dtype.
+- `weight_packed` is `qweight.t()`; `weight_zero_point` is packed along the outputs, `(ceil(out * bits / 32), n_groups)`.
+- compressed-tensors >= 0.18 packs 3/5/6/7 bits densely (qpeft's layout); 0.17 pads them to whole words. There is no version flag in the checkpoint.
+- vLLM 0.29 (image `nvcr.io/nvidia/vllm:26.09-py3`) takes asymmetric WNA16 only at 4 and 8 bits; vLLM main takes 2 to 8.
+- Targets are full module names: compressed-tensors and vLLM match them exactly, also for vLLM's fused `qkv_proj` / `gate_up_proj` shards.
+- Test models must be built with `_from_config(config, dtype=...)`, not `.to(dtype)`: `.to` rounds the rotary `inv_freq` buffer, and a loaded model then differs from it.
+- On the Spark (driver 580), that vLLM image fails in FLASH_ATTN with `CUDA_ERROR_UNSUPPORTED_PTX_VERSION`, also for an unquantized model; `attention_backend="TRITON_ATTN"` works.
 
 ## axolotl integration (`qpeft/integrations/axolotl/`)
 

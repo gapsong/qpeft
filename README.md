@@ -107,13 +107,16 @@ The dequantization is still affine per group, `w = s * q + beta` with `beta = -z
 | MLX affine quantization (`scales` + `biases`) | GPTQ (`qzeros`) |
 | GGUF `Q4_1` (`d` and `m` in fp16) | AWQ (`qzeros`) |
 | torchao int4 tinygemm layout (float zero-point domain) | torchao's integer zero-point domain |
+| | compressed-tensors (`weight_zero_point`) |
 
 Rounding `z'` would break `fake_quant == merge`, so an export into the right column has to refuse rather than approximate.
-Today qpeft exports to one format of each column:
+Today qpeft exports to one format of the left column and two of the right one:
 
 - `qpeft.kernels.to_tinygemm` runs a merged 4-bit model on PyTorch's int4 tinygemm kernel (CUDA), also after a QA-LoRA fold.
 - `qpeft.export.export_gptq` writes a GPTQ checkpoint (see [GPTQ export](#gptq-export)).
   EfficientQAT and PEQA keep integer zero-points, so their artifact maps onto GPTQ exactly; a QA-LoRA artifact is refused.
+- `qpeft.export.export_compressed_tensors` writes a compressed-tensors checkpoint, the format vLLM serves (see [compressed-tensors export](#compressed-tensors-export)).
+  The same rule holds: EfficientQAT and PEQA map exactly, QA-LoRA is refused.
 
 ## What it does beyond peft
 
@@ -256,6 +259,7 @@ qpeft/
   packing.py           # pack_codes / unpack_codes: codes in the GPTQ qweight layout
   kernels/tinygemm.py  # to_tinygemm: run a merged 4-bit model on the int4 tinygemm kernel (CUDA)
   export/gptq.py       # export_gptq: write a merged model as a GPTQ checkpoint (transformers + gptqmodel load it)
+  export/compressed_tensors.py  # export_compressed_tensors: the llm-compressor format (vLLM, transformers load it)
   mapping.py           # get_quant_model + registries                         (~ get_peft_model)
   peft_model.py        # QuantModel.merge_and_unload()                        (~ PeftModel)
   utils.py             # check_merge_equivalence, verify_quant_model          (the spine test)
@@ -273,7 +277,7 @@ qpeft/
     axolotl/plugin.py  # QPeftPlugin, `adapter: qpeft` for QA-LoRA and PEQA (needs .[axolotl])
 examples/              # quickstart, train_efficient_qat, train_qa_lora, hf_injection, qat_trainer
 benchmarks/            # peqa_vs_official: PEQA against the official EfficientQAT code, and PEQA vs EfficientQAT
-tests/                 # merge equivalence, backends, injection, config, save/load, phases, precision, trainer, PEQA, tinygemm, GPTQ export, axolotl args and plugin
+tests/                 # merge equivalence, backends, injection, config, save/load, phases, precision, trainer, PEQA, tinygemm, GPTQ and compressed-tensors export, axolotl args and plugin
 pyproject.toml
 ```
 
@@ -374,9 +378,39 @@ Everything that would not round-trip exactly is refused before a file is written
 Loaders undo that offset in different ways, so this format refuses a zero-point of 0.
 `checkpoint_format="gptq_v2"` stores `z` as it is and takes every zero-point, but only gptqmodel reads it.
 transformers + gptqmodel read both formats, also on CPU (tested on macOS for 2, 3, 4 and 8 bits).
-vLLM (main, October 2026) reads GPTQ only with `sym=True` at 4 or 8 bits, so it refuses qpeft's asymmetric checkpoints.
+vLLM (main, October 2026) reads GPTQ only with `sym=True` at 4 or 8 bits, so it refuses qpeft's asymmetric checkpoints; for vLLM, use the [compressed-tensors export](#compressed-tensors-export).
 For 4 bits on CPU, gptqmodel picks its `TorchAtenLinear` kernel, which rounds the scales to bf16 itself.
 That stays within bf16 noise for a bf16 model; `GPTQConfig(backend="torch")` keeps fp16 scales exact.
+
+### compressed-tensors export
+
+A merged EfficientQAT or PEQA model also exports as a compressed-tensors checkpoint (the llm-compressor format), which vLLM serves and transformers loads with the `compressed-tensors` library:
+
+```python
+from qpeft.export import export_compressed_tensors
+
+model.merge_and_unload()
+export_compressed_tensors(model, "out-ct")   # config.json with a quantization_config, model.safetensors
+tokenizer.save_pretrained("out-ct")
+llm = vllm.LLM("out-ct")                     # or AutoModelForCausalLM.from_pretrained("out-ct"), needs compressed-tensors
+```
+
+It writes the asymmetric `pack-quantized` layout (`weight_packed`, `weight_scale`, `weight_zero_point`, `weight_shape`), with one config group per bits / group size that names its layers in full.
+The export is exact, with no cast at all: the scales keep the model's dtype, and the codes and zero-points decode, with the compressed-tensors formula, to the merged model's weight bit for bit.
+transformers + compressed-tensors 0.19 on CPU compute the merged model's logits bit for bit (tested for 2 to 8 bits, bf16 and fp16).
+Everything that would not load back exactly is refused before a file is written:
+
+- a QA-LoRA artifact (fractional zero-points),
+- scales in another dtype than the checkpoint's (a loader would cast them),
+- a quantized layer that the model built from config.json does not hold as a plain `nn.Linear` (for example an MoE router), or whose weight it ties to another tensor (a tied `lm_head`),
+- bits outside 2 to 8.
+
+Bits 3, 5, 6 and 7 use the dense packing of compressed-tensors 0.18 and later (a value may spill into the next int32 word); compressed-tensors 0.17 and older pad those widths to whole words, a different layout.
+
+vLLM serves the export with its compressed-tensors WNA16 scheme.
+vLLM 0.29 (NVIDIA image `nvcr.io/nvidia/vllm:26.09-py3`) takes zero-points only at 4 bits (Marlin kernel on a GB10) and 8 bits (Humming kernel on a GB10), and refuses 2 and 3 bits with `Asymmetric quantization not supported for num_bits = 2. Supported: [4, 8]`; vLLM main takes 2 to 8 bits.
+On Qwen3-0.6B (PEQA at 4 and 8 bits, EfficientQAT at 4 bits, group size 128, bf16) vLLM is as close to the exact model (the merged model in fp32) as qpeft's own bf16 forward: same next-token argmax on 99 to 100 % of the scored tokens, and logprobs within bf16 noise.
+vLLM computes in the dtype it is given; serve the export in the dtype it was merged in, or the scales are rounded on load.
 
 Run the spine test per layer before trusting a scheme:
 
@@ -413,7 +447,7 @@ The `int_uniform` contract is implemented against two backends, and both are gre
 `backend="auto"` selects the pure-torch `ReferenceIntUniformScheme`, which is always available.
 `backend="torchao"` selects `TorchaoIntUniformScheme`, built on torchao's stable `quant_primitives` and imported lazily so torchao stays optional.
 `examples/train_*.py` show real training plus an integer merge, `examples/hf_injection.py` shows injection into a Hugging Face model, and `examples/qat_trainer.py` runs both EfficientQAT phases on Qwen3-0.6B.
-The test suite (`pytest`, plus `QPEFT_RUN_SLOW=1` for the tests that download a model) covers merge equivalence, both backends, injection, initialization, config, save/load, the EfficientQAT phases, PEQA against its paper, half precision, the trainer, the tinygemm export and the GPTQ export (the file, and a real load through transformers + gptqmodel on CPU).
+The test suite (`pytest`, plus `QPEFT_RUN_SLOW=1` for the tests that download a model) covers merge equivalence, both backends, injection, initialization, config, save/load, the EfficientQAT phases, PEQA against its paper, half precision, the trainer, the tinygemm export, the GPTQ export (the file, and a real load through transformers + gptqmodel on CPU) and the compressed-tensors export (the file, and a real load through transformers + compressed-tensors on CPU).
 
 Model quality is measured only on a small scale so far.
 `benchmarks/peqa_vs_official` runs PEQA against the official EfficientQAT code (same codes, same training steps, and the merged artifact runs in the official int layer) and compares RTN, PEQA, Block-AP and EfficientQAT by perplexity on SmolLM2-360M (WikiText-2 and C4).
@@ -423,8 +457,8 @@ Not supported:
 
 - Loading an already-quantized checkpoint (GPTQ, AWQ, torchao-packed).
   `TorchaoQuantLinear` is a stub, blocked by torchao's in-flux tensor-subclass API.
-- Exporting to AWQ, MLX or GGUF files, and a GPTQ export of a QA-LoRA artifact (its zero-points are fractional).
-  The exports are tinygemm (4 bits, CUDA) and GPTQ (EfficientQAT and PEQA).
+- Exporting to AWQ, MLX or GGUF files, and a GPTQ or compressed-tensors export of a QA-LoRA artifact (its zero-points are fractional).
+  The exports are tinygemm (4 bits, CUDA), GPTQ and compressed-tensors (EfficientQAT and PEQA).
 - The `mlx` backend and the planned ternary scheme.
 
 ## License

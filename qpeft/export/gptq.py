@@ -20,9 +20,6 @@ The zero-point convention is the checkpoint_format:
 """
 from __future__ import annotations
 
-import copy
-import json
-import os
 import re
 
 import torch
@@ -31,10 +28,10 @@ from torch import nn
 from ..packing import pack_codes
 from ..quant_schemes import UnsupportedSchemeError
 from ..tuners.tuners_utils import QuantLinear
+from ._checkpoint import integer_zero_points, loader_skeleton, merged_quant_layers, save_checkpoint
 
 CHECKPOINT_FORMATS = ("gptq", "gptq_v2")
 SUPPORTED_BITS = (2, 3, 4, 8)          # transformers' GPTQConfig accepts only these
-QPEFT_KEYS = ("qweight", "scale", "zero_point", "bias")
 # The first numbered component of a module name is its decoder block:
 # "model.layers.3.mlp.experts.7.up_proj" -> ("model.layers", "3", "mlp.experts.7.up_proj").
 BLOCK_NAME = re.compile(r"(.+?)\.(\d+)\.(.+)")
@@ -48,25 +45,10 @@ def export_gptq(model: nn.Module, save_directory, checkpoint_format: str = "gptq
     if checkpoint_format not in CHECKPOINT_FORMATS:
         raise UnsupportedSchemeError(
             f"checkpoint_format must be one of {CHECKPOINT_FORMATS}, got {checkpoint_format!r}.")
-    root = getattr(model, "base", model)
-    if not (hasattr(root, "save_pretrained") and hasattr(root, "config")):
-        raise UnsupportedSchemeError(
-            f"GPTQ export writes a Hugging Face checkpoint; {type(root).__name__} is not a "
-            "transformers PreTrainedModel.")
-    layers = {name: m for name, m in root.named_modules() if isinstance(m, QuantLinear)}
-    if not layers:
-        raise ValueError("no QuantLinear found; nothing to export.")
-
+    root, layers = merged_quant_layers(model, "GPTQ")
     bits, group_size = _shared_grid(layers)
     block_name, modules_in_block = _block_layout(root, layers)
     gptq = {name: _gptq_tensors(name, layer, checkpoint_format) for name, layer in layers.items()}
-
-    state = root.state_dict()
-    for name, tensors in gptq.items():
-        for key in QPEFT_KEYS:
-            state.pop(f"{name}.{key}", None)
-        state.update({f"{name}.{key}": value for key, value in tensors.items()})
-    root.save_pretrained(save_directory, state_dict=state)
 
     zero_points = torch.cat([layer.zero_point.detach().flatten() for layer in layers.values()])
     quantization_config = {
@@ -80,7 +62,7 @@ def export_gptq(model: nn.Module, save_directory, checkpoint_format: str = "gptq
     }
     if modules_in_block is not None:
         quantization_config["modules_in_block_to_quantize"] = [modules_in_block]
-    _add_to_config_json(save_directory, quantization_config)
+    save_checkpoint(root, gptq, save_directory, quantization_config)
 
 
 def _shared_grid(layers: dict[str, QuantLinear]) -> tuple[int, int]:
@@ -120,7 +102,7 @@ def _block_layout(root: nn.Module, layers: dict[str, QuantLinear]) -> tuple[str,
             "GPTQ quantizes the same linears in every decoder block; this model quantizes "
             "different ones per block. Use the same target_modules for every block.")
 
-    loader_blocks = _loader_skeleton(root).get_submodule(block_name)
+    loader_blocks = loader_skeleton(root).get_submodule(block_name)
     in_blocks = {f"{block_name}.{name}" for name, m in loader_blocks.named_modules() if _loader_replaces(m)}
     quantized = set(layers)
     kept_in_float = sorted(quantized - in_blocks)
@@ -141,13 +123,6 @@ def _block_layout(root: nn.Module, layers: dict[str, QuantLinear]) -> tuple[str,
     return block_name, names
 
 
-def _loader_skeleton(root: nn.Module) -> nn.Module:
-    """The model a GPTQ loader builds from config.json before it replaces any layer, on the meta
-    device: no weights, and the user's model and config stay untouched."""
-    with torch.device("meta"):
-        return type(root)(copy.deepcopy(root.config))
-
-
 def _loader_replaces(module: nn.Module) -> bool:
     """The layer types optimum's get_layers (optimum/gptq/utils.py) finds inside the blocks.
     get_layers takes nn.Linear by exact type, so a subclass of it (an MoE router with its own
@@ -159,8 +134,6 @@ def _loader_replaces(module: nn.Module) -> bool:
 def _gptq_tensors(name: str, layer: QuantLinear, checkpoint_format: str) -> dict[str, torch.Tensor]:
     """The tensors a GPTQ QuantLinear loads: qweight (in * bits // 32, out) int32,
     qzeros (n_groups, out * bits // 32) int32, scales (n_groups, out) fp16, g_idx (in,) int32."""
-    if not layer.merged:
-        raise UnsupportedSchemeError(f"{name}: GPTQ export needs a merged layer; call merge_and_unload() first.")
     bits, group_size = layer.config.bits, layer.config.group_size
     if bits not in SUPPORTED_BITS:
         raise UnsupportedSchemeError(f"{name}: GPTQ loaders take bits {SUPPORTED_BITS}, got {bits}.")
@@ -169,7 +142,7 @@ def _gptq_tensors(name: str, layer: QuantLinear, checkpoint_format: str) -> dict
             f"{name}: GPTQ packs the zero-points along the outputs; out_features * bits must be a "
             f"multiple of 32 (out_features={layer.out_features}, bits={bits}).")
 
-    stored_zeros = _stored_zero_points(name, layer.zero_point.detach(), bits, checkpoint_format)
+    stored_zeros = _stored_zero_points(name, integer_zero_points(name, layer, "GPTQ"), checkpoint_format)
     tensors = {
         "qweight": layer.qweight,
         "qzeros": pack_codes(stored_zeros.t(), bits).t().contiguous(),
@@ -181,21 +154,16 @@ def _gptq_tensors(name: str, layer: QuantLinear, checkpoint_format: str) -> dict
     return tensors
 
 
-def _stored_zero_points(name: str, zero_point: torch.Tensor, bits: int, checkpoint_format: str) -> torch.Tensor:
-    """The integer zero-points as the checkpoint stores them, (out, n_groups) int32."""
-    if not torch.equal(zero_point, zero_point.round()):
-        raise UnsupportedSchemeError(
-            f"{name}: its zero-points are fractional (a QA-LoRA fold, z' = z - delta / s). GPTQ stores "
-            "integer zero-points, and rounding them would break fake_quant == merge. Keep the qpeft "
-            "artifact (save_pretrained) or run it on tinygemm (qpeft.kernels.to_tinygemm).")
+def _stored_zero_points(name: str, zero_point: torch.Tensor, checkpoint_format: str) -> torch.Tensor:
+    """The (out, n_groups) int32 zero-points as the checkpoint stores them."""
     if checkpoint_format == "gptq_v2":
-        return zero_point.to(torch.int32)
+        return zero_point
     if bool((zero_point == 0).any()):
         raise UnsupportedSchemeError(
             f"{name}: {int((zero_point == 0).sum())} groups have zero-point 0, which the v1 GPTQ "
             "format (it stores z - 1) cannot hold in a way all loaders read alike. "
             "Use checkpoint_format='gptq_v2' (exact for every zero-point; read by gptqmodel only).")
-    return zero_point.to(torch.int32) - 1
+    return zero_point - 1
 
 
 def _exact_fp16_scale(name: str, scale: torch.Tensor) -> torch.Tensor:
@@ -207,13 +175,3 @@ def _exact_fp16_scale(name: str, scale: torch.Tensor) -> torch.Tensor:
             f"GPTQ's scale dtype (the merged scales are {scale.dtype}). Quantize and merge the model "
             "in bf16 or fp16, whose scales fp16 holds exactly.")
     return half
-
-
-def _add_to_config_json(save_directory, quantization_config: dict) -> None:
-    path = os.path.join(save_directory, "config.json")
-    with open(path) as f:
-        config = json.load(f)
-    config["quantization_config"] = quantization_config
-    with open(path, "w") as f:
-        json.dump(config, f, indent=2, sort_keys=True)
-        f.write("\n")
