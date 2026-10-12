@@ -335,6 +335,7 @@ It is the same mechanics as EfficientQAT's E2E-QP, without Block-AP before it.
 There is no official PEQA code, so `tests/test_peqa.py` checks it against the paper's equations.
 Two differences to the paper: qpeft is group-wise only (the paper's main results are per-channel), and qpeft clamps the scale to `[1e-4, 1e4]`.
 QA-LoRA runs with `get_quant_model` and your own loop or a plain HF `Trainer`; `param_groups` builds the optimizer groups.
+QA-LoRA and PEQA also run in axolotl with `adapter: qpeft` (EfficientQAT not yet); the plugin leaves the merged integer artifact in `output_dir` (see `qpeft/integrations/axolotl/plugin.py`).
 
 Save and load: only a merged model can be saved, as the integer artifact.
 
@@ -397,6 +398,7 @@ model = get_quant_model(hf, EfficientQATConfig(
 ```
 
 `target_modules` matches as in peft: a list entry is a module's full name or its last dotted part(s) (`"v_proj"` does not also hit `qkv_proj`), a string is a regex on the full name, and `None` takes every `nn.Linear`.
+`get_quant_model` refuses before it changes the model if no layer matches, or if a matched layer's `in_features` does not fit `group_size` and `bits`; the error lists every such layer.
 
 ## References
 
